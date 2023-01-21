@@ -3,6 +3,9 @@ import dataclasses
 import logging
 import math
 import random
+import time as time_module
+from collections import defaultdict
+
 import scipy.optimize
 import typing
 
@@ -812,16 +815,22 @@ def _get_close_indices(a: list[T],
         nxt = value_key(a[j1])
 
         if nxt - cur < threshold:
-            out.append((index_key(a[j]), index_key(a[j1])))
+            index1 = index_key(a[j])
+            index2 = index_key(a[j1])
+
+            if index1 > index2:
+                out.append((index2, index1))
+            else:
+                out.append((index1, index2))
 
     return out
 
 
-def get_collisions(futures: typing.Iterable[EntityFuture], current_time: float, world: World, config: Config,
-                   max_time) -> dict[tuple[int, int], float]:
+def get_raw_collisions(futures: typing.Iterable[EntityFuture], current_time: float, world: World, config: Config,
+                       max_time) -> dict[tuple[int, int], float]:
     out = {}
 
-    min_r = min(future.radius for future in futures)
+    max_r = max(future.radius for future in futures)
 
     max_speed = max_velocity(config.physical_max_speed + config.physical_friction, config.physical_friction)
     diameter_time = 2 * config.seeker_radius / max_speed
@@ -848,8 +857,8 @@ def get_collisions(futures: typing.Iterable[EntityFuture], current_time: float, 
             positions_x.append((pos.x, i))
             positions_y.append((pos.y, i))
 
-        x_collisions = set(_get_close_indices(positions_x, min_r * 3.5))
-        y_collisions = set(_get_close_indices(positions_y, min_r * 3.5))
+        x_collisions = set(_get_close_indices(positions_x, max_r * 3.5))
+        y_collisions = set(_get_close_indices(positions_y, max_r * 3.5))
 
         collisions = x_collisions & y_collisions
 
@@ -862,3 +871,97 @@ def get_collisions(futures: typing.Iterable[EntityFuture], current_time: float, 
         dt += timestep
 
     return out
+
+
+def refine_collision(future1: EntityFuture, future2: EntityFuture, col_time: float, world: World,
+                     current_time: float, t_range: int = 20) -> float:
+    t1 = int(max(current_time, col_time - t_range))
+    t2 = int(col_time + t_range)
+
+    for t in range(t1, t2):
+        try:
+            pos1 = world.normalized_position(future1.pos_at(t))
+            pos2 = world.normalized_position(future2.pos_at(t))
+        except FutureUncertainError:
+            continue
+
+        if (pos2 - pos1).squared_length() < (future1.radius + future2.radius) ** 2:
+            return t
+
+
+def get_collisions(futures: typing.Sequence[EntityFuture], current_time: float, world: World, config: Config,
+                   max_time) -> dict[tuple[int, int], float]:
+    raw_collisions = get_raw_collisions(futures, current_time, world, config, max_time)
+
+    out = {}
+    for (a, b), time in raw_collisions.items():
+        future1, future2 = futures[a], futures[b]
+
+        time = refine_collision(future1, future2, time, world, current_time)
+
+        if time is None:
+            continue
+
+        out |= {(a, b): time}
+
+    return out
+
+
+class GameStrategy:
+    def __init__(self):
+        self.agents: list[Agent] = []
+        self.goal_futures: dict[str, GoalFuture] = {}
+        self.last_collision_time = -1
+        self.last_want_solves = -1
+
+    def update(self, my_seekers: list[Seeker]):
+        while len(self.agents) < len(my_seekers):
+            self.agents.append(Agent())
+
+    def update_navigation(self, my_seekers: list[Seeker], world: World, current_time: float):
+        want_solves = defaultdict(list)
+
+        def solve_mgr(id_: str, solve):
+            want_solves[id_].append(solve)
+
+        for seeker, agent in zip(my_seekers, self.agents):
+            agent.update_navigation(seeker, world, current_time, solve_mgr)
+
+        if want_solves:
+            key = random.choice(list(want_solves.keys()))
+            want_solves[key][0]()
+
+        for seeker, agent in zip(my_seekers, self.agents):
+            agent.update_seeker_target(seeker, current_time)
+
+        self.last_want_solves = sum([len(solves) for solves in want_solves.values()])
+
+    def update_goals(self, goals: list[Goal], world: World, current_time: float):
+        for goal in goals:
+            if goal.id not in self.goal_futures:
+                self.goal_futures[goal.id] = GoalFuture()
+
+            self.goal_futures[goal.id].update(goal, current_time)
+
+    def debug_draw(self, my_seekers: list[Seeker], goals: list[Goal], world: World, current_time: float):
+        for agent, seeker in zip(self.agents, my_seekers):
+            agent.debug_draw(seeker, current_time, world)
+
+        for future, goal in zip(self.goal_futures.values(), goals):
+            future.debug_draw(current_time, world, goal)
+
+    def get_collisions(self, world: World, current_time: float, config: Config, max_time: int = 200
+                       ) -> tuple[list[EntityFuture], dict[tuple[int, int], float]]:
+        t1 = time_module.perf_counter()
+
+        # noinspection PyTypeChecker
+        entity_futures: list[EntityFuture] = (
+                [agent.future for agent in self.agents]
+                + [f for f in self.goal_futures.values()]
+        )
+        collisions = get_collisions(entity_futures, current_time, world, config, max_time=max_time)
+
+        t2 = time_module.perf_counter()
+        self.last_collision_time = t2 - t1
+
+        return entity_futures, collisions

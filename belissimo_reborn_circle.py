@@ -1,10 +1,8 @@
-import time
-from collections import defaultdict
-
 from belissimolib import *
 
+from collections import defaultdict
 from seekers import Seeker
-from seekers.debug_drawing import draw_circle, draw_line, draw_text
+from seekers.debug_drawing import draw_text
 
 logger = logging.getLogger("belissimo_reborn")
 
