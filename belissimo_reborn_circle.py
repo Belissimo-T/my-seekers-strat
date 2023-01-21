@@ -1,13 +1,11 @@
 from belissimolib import *
 
-from collections import defaultdict
 from seekers import Seeker
 from seekers.debug_drawing import draw_text
 
 logger = logging.getLogger("belissimo_reborn")
 
-agents: list[Agent] = []
-
+game_strat = GameStrategy()
 angle = 0
 
 
@@ -20,29 +18,16 @@ def circle_pos():
 
 def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_players, own_camp, camps, world,
            current_time):
-    while len(agents) < len(seekers):
-        agents.append(Agent(plan_limit=5))
+    game_strat.update(seekers)
 
-    want_solves = defaultdict(list)
-
-    def solve_mgr(id_: str, solve):
-        want_solves[id_].append(solve)
-
-    for i, (seeker, agent) in enumerate(zip(seekers, agents)):
+    for seeker, agent in zip(seekers, game_strat.agents):
         if len(agent.future.future_targets) < 1:
             agent.future.future_targets.append(Target(circle_pos() + world.middle()))
 
-        agent.update_navigation(seeker, world, current_time, solve_mgr)
-        agent.debug_draw(seeker, current_time, world)
+    game_strat.update_navigation(seekers, world, current_time)
+    game_strat.debug_draw(seekers, goals, world, current_time)
 
-    if want_solves:
-        key = random.choice(list(want_solves.keys()))
-        want_solves[key][0]()
-
-    for seeker, agent in zip(seekers, agents):
-        agent.update_seeker_target(seeker, current_time)
-
-    draw_text(f"{current_time} {sum(len(val) for val in want_solves.values())}",
+    draw_text(f"{current_time} {game_strat.last_want_solves}",
               Vector(5, world.height / 2), color=(255, 255, 255), center=False)
 
     return seekers
