@@ -437,11 +437,16 @@ class Navigation(abc.ABC):
             draw_circle(self.target.pos, physical.radius, width=1, color=(255, 255, 255))
 
         if self.target.pos is not None:
+            color = (255, 255, 0)
+
+            if index != 0:
+                color = (70, 70, 0)
+
             world.normalize_position(last_pos)
             draw_circle(last_pos,
                         get_target_accuracy(
                             self.arrival_time - current_time, physical.radius
-                        ), color=(255, 255, 0), width=1)
+                        ), color=color, width=1)
 
 
 class ConstAccelerationNavigation(Navigation):
