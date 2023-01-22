@@ -5,13 +5,13 @@ from seekers.debug_drawing import draw_text
 
 logger = logging.getLogger("belissimo_reborn")
 
-game_strat = GameStrategy()
+game_strat = GameStrategy(plan_limit=40)
 angle = 0
 
 
 def circle_pos():
     global angle
-    angle += 2 * math.pi / 7
+    angle += 2 * math.pi / 60
 
     return Vector.from_polar(angle, 250)
 

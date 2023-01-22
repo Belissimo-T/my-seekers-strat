@@ -72,6 +72,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
 
     def __init__(self, friction: float = .02):
         self.friction = friction
+        self.log_c = math.log(1 - friction)
 
         # import sympy as sp
         #
@@ -122,25 +123,19 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
             p(t) = integral_0^t (v_0 c^t + a (c^t - 1)/(c - 1)) dt 
                  = (a (c^t - t log(c) - 1) + (c - 1) v_0 (c^t - 1))/((c - 1) log(c))
 
-        == Getting the Terminal Position ==
-        we can actually get a much simpler formula for the case where a = 0:
+        == Terminal Position ==
+        we can actually get a much simpler formula for p(t) when a = 0:
             p(t) = v_0*(c**t - 1)/log(c)
         
         plugging that into wolframalpha gives us the following limit:
             lim(t->inf) v_0*(c**t - 1)/log(c) = -v_0/log(c)
         
-        == Getting the Terminal Velocity ==
-        again, we can get a much simpler formula for the case where a = 0:
-            v(t) = v_0 * c**t - 1/(c - 1)
-        
-        plugging that into wolframalpha gives us the following limit:
+        == Terminal Velocity ==
+        solving this equation:
+            v(t) = v(t + 1)
+            v = v * f + a
             
-        
-        
-        Set v to 0:
-            v(t) = 0
-            v(t) = 0 = v_0 * c**t + a * (c ** t - 1) / (c - 1)
-        
+            => v = -a / (f - 1) 
         """
 
     def get_position_of_t(self, t: float, a: float = 0, v_0: float = 0) -> float:
@@ -347,8 +342,8 @@ def normalize_line(world: World, a: Vector, b: Vector) -> tuple[Vector, Vector]:
 
 
 def get_target_accuracy(eta: float, r: float):
-    a = r + eta * 0.5 - 20
-    return min(max(r, a), r * 5)
+    a = r + eta * 0.3 - 5
+    return min(max(r, a), r * 3)
 
 
 @dataclasses.dataclass
@@ -365,24 +360,44 @@ class Navigation(abc.ABC):
     arrival_time: float
     helper_navigation: bool = False
 
+    last_seeker_info: "SeekerInfo | None" = None
+
     _path_color: tuple[int, int, int]
+
+    @abc.abstractmethod
+    def planned_pos_at(self, time: float) -> Vector:
+        ...
 
     @abc.abstractmethod
     def pos_at(self, time: float) -> Vector:
         ...
 
-    def end_pos(self) -> Vector:
-        return self.pos_at(self.arrival_time)
+    @abc.abstractmethod
+    def planned_vel_at(self, time: float) -> Vector:
+        ...
 
     @abc.abstractmethod
     def vel_at(self, time: float) -> Vector:
         ...
 
-    def end_vel(self) -> Vector:
-        return self.vel_at(self.arrival_time)
+    @abc.abstractmethod
+    def planned_end_pos(self) -> Vector:
+        ...
 
     @abc.abstractmethod
-    def get_current_acceleration(self) -> Vector:
+    def end_pos(self) -> Vector:
+        ...
+
+    @abc.abstractmethod
+    def planned_end_vel(self) -> Vector:
+        ...
+
+    @abc.abstractmethod
+    def end_vel(self) -> Vector:
+        ...
+
+    @abc.abstractmethod
+    def get_acceleration(self, time: float) -> Vector:
         ...
 
     @abc.abstractmethod
@@ -421,9 +436,12 @@ class Navigation(abc.ABC):
         if self.target.pos is not None:
             draw_circle(self.target.pos, physical.radius, width=1, color=(255, 255, 255))
 
-        if index == 0 and self.target.pos is not None:
+        if self.target.pos is not None:
             world.normalize_position(last_pos)
-            draw_circle(last_pos, get_target_accuracy(eta, physical.radius), color=(255, 255, 0), width=1)
+            draw_circle(last_pos,
+                        get_target_accuracy(
+                            self.arrival_time - current_time, physical.radius
+                        ), color=(255, 255, 0), width=1)
 
 
 class ConstAccelerationNavigation(Navigation):
@@ -443,7 +461,9 @@ class ConstAccelerationNavigation(Navigation):
         self.start_vel = start_vel
         self.friction = friction
 
-    def pos_at(self, time: float) -> Vector:
+        self.last_seeker_info: SeekerInfo | None = None
+
+    def planned_pos_at(self, time: float) -> Vector:
         dt = time - self.start_time
         return future_position(
             dt,
@@ -453,7 +473,19 @@ class ConstAccelerationNavigation(Navigation):
             self.friction
         )
 
-    def vel_at(self, time: float) -> Vector:
+    def pos_at(self, time: float) -> Vector:
+        if self.last_seeker_info is None:
+            return self.planned_pos_at(time)
+
+        return future_position(
+            time - self.last_seeker_info.time,
+            self.get_acceleration(time),
+            self.last_seeker_info.velocity,
+            self.last_seeker_info.position,
+            self.last_seeker_info.friction,
+        )
+
+    def planned_vel_at(self, time: float) -> Vector:
         dt = time - self.start_time
         return future_velocity(
             dt,
@@ -462,45 +494,49 @@ class ConstAccelerationNavigation(Navigation):
             self.friction
         )
 
-    def get_current_acceleration(self) -> Vector:
+    def vel_at(self, time: float) -> Vector:
+        if self.last_seeker_info is None:
+            self.planned_vel_at(time)
+
+        return future_velocity(
+            time - self.last_seeker_info.time,
+            self.get_acceleration(time),
+            self.last_seeker_info.velocity,
+            self.last_seeker_info.friction,
+        )
+
+    def planned_end_pos(self) -> Vector:
+        return self.planned_pos_at(self.arrival_time)
+
+    def end_pos(self) -> Vector:
+        return self.pos_at(self.arrival_time)
+
+    def planned_end_vel(self) -> Vector:
+        return self.planned_vel_at(self.arrival_time)
+
+    def end_vel(self) -> Vector:
+        return self.vel_at(self.arrival_time)
+
+    def get_acceleration(self, time: float) -> Vector:
+        # constant acceleration
         return self.thrust_vector
 
-    def pos_error2(self, physical: Seeker | Goal, current_time: float, world: World) -> float:
+    def pos_error2(self, physical: Seeker | None, current_time: float, world: World) -> float:
         if self.target.pos is None:
             # target None means navigation is always correct
             return 0
 
-        if get_thrust(physical) ** 2 - self.thrust_vector.squared_length() > 1e-6:
+        if physical is not None and get_thrust(physical) ** 2 - self.thrust_vector.squared_length() > 1e-6:
             # thrust changed
             return float('inf')
 
-        fut_pos = world.normalized_position(
-            future_position2(self.arrival_time - current_time, physical, self.thrust_vector)
-        )
-        diff = self.target.pos - fut_pos
+        if physical is not None:
+            fut_pos = future_position2(self.arrival_time - current_time, physical, self.thrust_vector)
+        else:
+            fut_pos = self.end_pos()
+        fut_planned_pos = self.planned_end_pos()
 
-        return diff.squared_length()
-
-    # def re_solve(self,
-    #              seeker: Seeker,
-    #              target: Vector,
-    #              world: World,
-    #              target_accuracy: float,
-    #              min_dt: int = -10, max_dt: int = 10
-    #              ) -> bool:
-    #     new_eta = resolve_new_eta(self.arrival_time,
-    #                               seeker,
-    #                               target,
-    #                               world,
-    #                               self.thrust_vector,
-    #                               target_accuracy,
-    #                               min_dt, max_dt)
-    #     if new_eta is not None:
-    #         if new_eta > 0:
-    #             self.arrival_time = new_eta
-    #             return True
-    #
-    #     return False
+        return world.torus_difference(fut_pos, fut_planned_pos).squared_length()
 
     @classmethod
     def solve_from_target(cls,
@@ -558,23 +594,43 @@ SolveManager = typing.Callable[[str, typing.Callable[[], None]], None]
 class EntityFuture(abc.ABC):
     radius: float
 
+    @abc.abstractmethod
+    def planned_pos_at(self, time: float) -> Vector:
+        ...
+
+    @abc.abstractmethod
     def pos_at(self, time: float) -> Vector:
         ...
 
+    @abc.abstractmethod
+    def planned_vel_at(self, time: float) -> Vector:
+        ...
+
+    @abc.abstractmethod
     def vel_at(self, time: float) -> Vector:
         ...
 
-    def end_pos(self) -> Vector:
+    @abc.abstractmethod
+    def planned_end_pos(self, default: Vector) -> Vector:
         ...
 
-    def end_vel(self) -> Vector:
+    @abc.abstractmethod
+    def end_pos(self, default: Vector) -> Vector:
+        ...
+
+    @abc.abstractmethod
+    def planned_end_vel(self, default: Vector) -> Vector:
+        ...
+
+    @abc.abstractmethod
+    def end_vel(self, default: Vector) -> Vector:
         ...
 
     def debug_draw(self, current_time: float, world: World, physical: Physical, steps: int):
         ...
 
 
-class PhysicalFuture(EntityFuture, abc.ABC):
+class PhysicalFuture(EntityFuture):
     radius: float
 
     def __init__(self, segments: list[Navigation] = None):
@@ -587,25 +643,43 @@ class PhysicalFuture(EntityFuture, abc.ABC):
 
         raise FutureUncertainError(f"No segment found for time {time}.")
 
+    def planned_pos_at(self, time: float) -> Vector:
+        return self.get_segment(time).planned_pos_at(time)
+
     def pos_at(self, time: float) -> Vector:
         return self.get_segment(time).pos_at(time)
+
+    def planned_vel_at(self, time: float) -> Vector:
+        return self.get_segment(time).planned_vel_at(time)
 
     def vel_at(self, time: float) -> Vector:
         return self.get_segment(time).vel_at(time)
 
-    def end_pos(self, default: Vector | None = None) -> Vector:
+    def planned_end_pos(self, default: Vector) -> Vector:
+        if not self.segments:
+            return default
+
+        return self.segments[-1].planned_end_pos()
+
+    def end_pos(self, default: Vector) -> Vector:
         if not self.segments:
             return default
 
         return self.segments[-1].end_pos()
 
-    def end_vel(self, default: Vector | None = None) -> Vector:
+    def planned_end_vel(self, default: Vector) -> Vector:
+        if not self.segments:
+            return default
+
+        return self.segments[-1].planned_end_vel()
+
+    def end_vel(self, default: Vector) -> Vector:
         if not self.segments:
             return default
 
         return self.segments[-1].end_vel()
 
-    def end_time(self, default: float | None = None) -> float:
+    def planned_end_time(self, default: float) -> float:
         if not self.segments:
             return default
 
@@ -615,8 +689,8 @@ class PhysicalFuture(EntityFuture, abc.ABC):
         for i, segment in enumerate(self.segments):
             segment.debug_draw(current_time, world, physical, i, steps)
 
-    def get_thrust(self, time: float) -> Vector:
-        return self.get_segment(time).get_current_acceleration()
+    def get_acceleration(self, time: float) -> Vector:
+        return self.get_segment(time).get_acceleration(time)
 
 
 class GoalFuture(EntityFuture):
@@ -642,6 +716,9 @@ class GoalFuture(EntityFuture):
             friction=self.friction
         )
 
+    def planned_pos_at(self, time: float) -> Vector:
+        return self.pos_at(time)
+
     def vel_at(self, time: float) -> Vector:
         return future_velocity(
             time=time - self.time,
@@ -650,7 +727,10 @@ class GoalFuture(EntityFuture):
             friction=self.friction
         )
 
-    def end_pos(self) -> Vector:
+    def planned_vel_at(self, time: float) -> Vector:
+        return self.vel_at(time)
+
+    def end_pos(self, default: Vector = None) -> Vector:
         return terminal_position(
             acceleration=Vector(0, 0),
             velocity=self.vel,
@@ -658,8 +738,14 @@ class GoalFuture(EntityFuture):
             friction=self.friction
         )
 
-    def end_vel(self) -> Vector:
+    def planned_end_pos(self, default: Vector) -> Vector:
+        return self.end_pos(default)
+
+    def end_vel(self, default: Vector) -> Vector:
         return Vector(0, 0)
+
+    def planned_end_vel(self, default: Vector) -> Vector:
+        return self.end_vel(default)
 
     def debug_draw(self, current_time: float, world: World, physical: Goal, steps: int = 15):
         from seekers.debug_drawing import draw_circle, draw_line
@@ -667,6 +753,14 @@ class GoalFuture(EntityFuture):
         end_pos = self.end_pos()
         draw_circle(world.normalized_position(end_pos), physical.radius, color=(100, 100, 100), width=1)
         draw_line(physical.position, end_pos, color=(50, 50, 50), width=1)
+
+
+@dataclasses.dataclass
+class SeekerInfo:
+    position: Vector
+    velocity: Vector
+    friction: float
+    time: float
 
 
 class SeekerFuture(PhysicalFuture):
@@ -698,12 +792,12 @@ class SeekerFuture(PhysicalFuture):
 
             nav = ConstAccelerationNavigation.solve_from_target(
                 target.pos,
-                self.end_pos(seeker.position),
-                self.end_vel(seeker.velocity),
+                self.end_pos(default=seeker.position),
+                self.end_vel(default=seeker.velocity),
                 seeker.config.physical_friction,
                 get_thrust(seeker),
                 world,
-                self.end_time(current_time)
+                self.planned_end_time(default=current_time)
             )
 
             self.segments.append(nav)
@@ -718,16 +812,33 @@ class SeekerFuture(PhysicalFuture):
         del self.segments[i:]
 
     def check_segments(self, seeker: Seeker, current_time: float, world: World):
-        if not self.segments:
-            return
+        for i, nav in enumerate(self.segments):
+            err2 = nav.pos_error2(seeker if i == 0 else None, current_time, world)
+            max_err = get_target_accuracy(nav.arrival_time - current_time, seeker.radius)
 
-        err2 = self.segments[0].pos_error2(seeker, current_time, world)
-        max_err = get_target_accuracy(self.segments[0].arrival_time - current_time, seeker.radius)
+            if err2 > max_err ** 2:
+                self.invalidate_segments(i)
+                break
 
-        if err2 > max_err ** 2:
-            self.invalidate_segments()
+    def update_seeker_info(self, seeker: Seeker, current_time: float):
+        pos = seeker.position
+        vel = seeker.velocity
+        time = current_time
+
+        for segment in self.segments:
+            segment.last_seeker_info = SeekerInfo(
+                position=pos,
+                velocity=vel,
+                friction=seeker.config.physical_friction,
+                time=time
+            )
+
+            pos = segment.end_pos()
+            vel = segment.end_vel()
+            time = segment.arrival_time
 
     def update(self, seeker: Seeker, current_time: float, world: World, solve_manager: SolveManager):
+
         if seeker.disabled_counter > self._last_disabled:
             self.invalidate_segments()
             self.segments: list[Navigation] = [
@@ -741,11 +852,10 @@ class SeekerFuture(PhysicalFuture):
 
         self.check_segments(seeker, current_time, world)
 
+        self.update_seeker_info(seeker, current_time)
         for _ in range(self.plan_limit - len(self.segments)):
             self.plan_target(seeker, current_time, world, solve_manager)
-
-        if seeker.is_disabled:
-            ...  # breakpoint()
+            self.update_seeker_info(seeker, current_time)
 
         self._last_disabled = seeker.disabled_counter
         self.radius = seeker.radius
@@ -783,12 +893,9 @@ class Agent:
                 logger.error("No navigation!")
             return
 
-        a = self.future.get_thrust(current_time)
+        a = self.future.get_acceleration(current_time)
         seeker.target = seeker.position + a * 20
         # seeker.target = self.target
-
-    def pos_at(self, time: float) -> Vector:
-        return self.future.pos_at(time)
 
     def debug_draw(self, seeker: Seeker, current_time: float, world: World, steps=10):
         self.future.debug_draw(current_time, world, seeker, steps)
@@ -885,7 +992,7 @@ def refine_collision(future1: EntityFuture, future2: EntityFuture, col_time: flo
         except FutureUncertainError:
             continue
 
-        if (pos2 - pos1).squared_length() < (future1.radius + future2.radius) ** 2:
+        if (pos2 - pos1).squared_length() < ((future1.radius + future2.radius) * 1.2) ** 2:
             return t
 
 
@@ -908,7 +1015,8 @@ def get_collisions(futures: typing.Sequence[EntityFuture], current_time: float, 
 
 
 class GameStrategy:
-    def __init__(self):
+    def __init__(self, plan_limit: int = 4):
+        self.plan_limit = plan_limit
         self.agents: list[Agent] = []
         self.goal_futures: dict[str, GoalFuture] = {}
         self.last_collision_time = -1
@@ -916,7 +1024,7 @@ class GameStrategy:
 
     def update(self, my_seekers: list[Seeker]):
         while len(self.agents) < len(my_seekers):
-            self.agents.append(Agent())
+            self.agents.append(Agent(plan_limit=self.plan_limit))
 
     def update_navigation(self, my_seekers: list[Seeker], world: World, current_time: float):
         want_solves = defaultdict(list)
@@ -936,7 +1044,7 @@ class GameStrategy:
 
         self.last_want_solves = sum([len(solves) for solves in want_solves.values()])
 
-    def update_goals(self, goals: list[Goal], world: World, current_time: float):
+    def update_goals(self, goals: list[Goal], current_time: float):
         for goal in goals:
             if goal.id not in self.goal_futures:
                 self.goal_futures[goal.id] = GoalFuture()

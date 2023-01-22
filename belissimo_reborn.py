@@ -17,7 +17,7 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
             agent.future.future_targets.append(Target(world.random_position()))
 
     strat.update_navigation(seekers, world, current_time)
-    strat.update_goals(goals, world, current_time)
+    strat.update_goals(goals, current_time)
 
     entity_futures, collisions = strat.get_collisions(world, current_time, config=seekers[0].config)
 
