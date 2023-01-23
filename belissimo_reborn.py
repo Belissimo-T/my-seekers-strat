@@ -5,7 +5,7 @@ from seekers.debug_drawing import draw_circle, draw_line, draw_text
 
 logger = logging.getLogger("belissimo_reborn")
 
-strat = GameStrategy()
+strat = GameStrategy(plan_limit=3)
 
 
 def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_players, own_camp, camps, world,

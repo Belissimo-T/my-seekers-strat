@@ -5,11 +5,10 @@ import math
 import random
 import time as time_module
 from collections import defaultdict
-
 import scipy.optimize
 import typing
 
-from seekers import Physical, Vector, World, Seeker, Goal, Config
+from seekers import Physical, Vector, World, Seeker, Goal, Config, Color
 
 logger = logging.getLogger("belissilib")
 
@@ -312,6 +311,18 @@ def max_velocity(max_acceleration: float, friction: float) -> float:
     return FrictionMovementModel.get_max_velocity_any_f(max_acceleration, friction)
 
 
+def t_of_max_angle_velocity(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
+    return math.log(
+        (a_x ** 2 + a_y ** 2) / (
+                a_x ** 2 - 2 * a_x * f * v_0_x +
+                a_y ** 2 - 2 * a_y * f * v_0_y +
+
+                f ** 2 * v_0_x ** 2 +
+                f ** 2 * v_0_y ** 2
+        )
+    ) / (2 * math.log(1 - f))
+
+
 def balance_a_random(a: Vector) -> Vector:
     return a if random.random() < a.length() else -a
 
@@ -407,7 +418,8 @@ class Navigation(abc.ABC):
     def __contains__(self, item: float):
         return self.start_time <= item <= self.arrival_time
 
-    def debug_draw(self, current_time: float, world: World, physical: Physical, index: int, steps: int):
+    def debug_draw(self, current_time: float, world: World, physical: Physical, index: int, steps: int
+                   ) -> Color:
         from seekers.debug_drawing import draw_line, draw_circle
 
         if index == 0:
@@ -447,6 +459,8 @@ class Navigation(abc.ABC):
                         get_target_accuracy(
                             self.arrival_time - current_time, physical.radius
                         ), color=color, width=1)
+
+        return path_color
 
 
 class ConstAccelerationNavigation(Navigation):
@@ -501,7 +515,7 @@ class ConstAccelerationNavigation(Navigation):
 
     def vel_at(self, time: float) -> Vector:
         if self.last_seeker_info is None:
-            self.planned_vel_at(time)
+            return self.planned_vel_at(time)
 
         return future_velocity(
             time - self.last_seeker_info.time,
@@ -541,6 +555,9 @@ class ConstAccelerationNavigation(Navigation):
             fut_pos = self.end_pos()
         fut_planned_pos = self.planned_end_pos()
 
+        world.normalize_position(fut_pos)
+        world.normalize_position(fut_planned_pos)
+
         return world.torus_difference(fut_pos, fut_planned_pos).squared_length()
 
     @classmethod
@@ -566,6 +583,33 @@ class ConstAccelerationNavigation(Navigation):
 
         return cls(thrust_vec, start_time, start_time + eta, target, start_pos, start_vel, friction)
 
+    def max_angle_velocity(self) -> float:
+        return self.start_time + t_of_max_angle_velocity(
+            *self.thrust_vector,
+            *self.start_vel,
+            f=self.friction
+        )
+
+    def debug_draw(self, current_time: float, world: World, physical: Physical, index: int, steps: int
+                   ) -> Color:
+        path_color = super().debug_draw(current_time, world, physical, index, steps)
+
+        try:
+            max_angle_vel_t = self.max_angle_velocity()
+        except ValueError:
+            return path_color
+
+        if max_angle_vel_t not in self or current_time > max_angle_vel_t:
+            return path_color
+
+        pos = self.pos_at(max_angle_vel_t)
+        world.normalize_position(pos)
+        vel = self.vel_at(max_angle_vel_t)
+
+        from seekers.debug_drawing import draw_line
+        draw_line(pos, pos + vel.rotated(math.pi / 2).normalized() * 10,
+                  width=1, color=path_color)
+
 
 class DisabledNavigation(ConstAccelerationNavigation):
     _path_color = (50, 50, 255)
@@ -580,8 +624,9 @@ class DisabledNavigation(ConstAccelerationNavigation):
             friction=friction
         )
 
-    def debug_draw(self, current_time: float, world: World, physical: Goal | Seeker, index: int, steps: int):
-        super().debug_draw(current_time, world, physical, index, steps)
+    def debug_draw(self, current_time: float, world: World, physical: Goal | Seeker, index: int, steps: int
+                   ) -> Color:
+        path_color = super().debug_draw(current_time, world, physical, index, steps)
 
         from seekers.debug_drawing import draw_text, draw_circle
 
@@ -591,6 +636,8 @@ class DisabledNavigation(ConstAccelerationNavigation):
 
             draw_circle(end_pos, physical.radius, color=self._path_color, width=1)
             draw_text(str(counter), end_pos, color=(255, 255, 255))
+
+        return path_color
 
 
 SolveManager = typing.Callable[[str, typing.Callable[[], None]], None]
@@ -797,12 +844,12 @@ class SeekerFuture(PhysicalFuture):
 
             nav = ConstAccelerationNavigation.solve_from_target(
                 target.pos,
-                self.end_pos(default=seeker.position),
+                world.normalized_position(self.end_pos(default=seeker.position)),
                 self.end_vel(default=seeker.velocity),
                 seeker.config.physical_friction,
                 get_thrust(seeker),
                 world,
-                self.planned_end_time(default=current_time)
+                int(self.planned_end_time(default=current_time))
             )
 
             self.segments.append(nav)
@@ -902,7 +949,7 @@ class Agent:
         seeker.target = seeker.position + a * 20
         # seeker.target = self.target
 
-    def debug_draw(self, seeker: Seeker, current_time: float, world: World, steps=10):
+    def debug_draw(self, seeker: Seeker, current_time: float, world: World, steps=20):
         self.future.debug_draw(current_time, world, seeker, steps)
 
 
@@ -986,7 +1033,7 @@ def get_raw_collisions(futures: typing.Iterable[EntityFuture], current_time: flo
 
 
 def refine_collision(future1: EntityFuture, future2: EntityFuture, col_time: float, world: World,
-                     current_time: float, t_range: int = 20) -> float:
+                     current_time: float, t_range: int = 40) -> float:
     t1 = int(max(current_time, col_time - t_range))
     t2 = int(col_time + t_range)
 
