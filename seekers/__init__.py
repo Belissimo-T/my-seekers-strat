@@ -22,13 +22,14 @@ class SeekersGame:
 
     def __init__(self, local_ai_locations: typing.Iterable[str], config: Config,
                  grpc_address: typing.Literal[False] | str = "localhost:7777", seed: float = 42,
-                 debug: bool = True, print_scores: bool = True):
+                 debug: bool = True, print_scores: bool = True, dont_kill: bool = False):
         self._logger = logging.getLogger("SeekersGame")
 
         self.config = config
         self.debug = debug
         self.seed = seed
         self.do_print_scores = print_scores
+        self.dont_kill = dont_kill
 
         if grpc_address:
             from .grpc import GrpcSeekersServer
@@ -96,6 +97,14 @@ class SeekersGame:
 
             # perform game logic
             for _ in range(self.config.updates_per_frame):
+                # end game if tournament_length has been reached
+                if self.config.global_playtime and self.ticks >= self.config.global_playtime:
+                    if self.dont_kill:
+                        continue
+                    else:
+                        running = False
+                        break
+
                 for player in self.players.values():
                     player.poll_ai(self.config.global_wait_for_players, self.world,
                                    self.goals, self.players, self.get_time, self.debug)
@@ -103,11 +112,6 @@ class SeekersGame:
                 game_logic.tick(self.players.values(), self.camps, self.goals, self.animations, self.world)
 
                 self.ticks += 1
-
-                # end game if tournament_length has been reached
-                if self.config.global_playtime and self.ticks >= self.config.global_playtime:
-                    running = False
-                    break
 
             # draw graphics
             self.renderer.draw(self.players.values(), self.camps, self.goals, self.animations, self.clock)
@@ -130,6 +134,9 @@ class SeekersGame:
         def wait_for_players():
             last_diff = None
             while len(self.players) < self.config.global_players:
+                # start can be called multiple times
+                self.grpc.start()
+
                 new_diff = self.config.global_players - len(self.players)
 
                 if new_diff != last_diff:
@@ -146,8 +153,6 @@ class SeekersGame:
             return
 
         if self.grpc:
-            self.grpc.start()
-
             wait_for_players()
 
     @staticmethod
@@ -172,7 +177,8 @@ class SeekersGame:
         """Add a player to the game while it is not running yet and raise a GameFullError if the game is full.
         This function is used by the gRPC server."""
 
-        assert not self.camps, "Game must not be running to add a player."
+        if self.camps:
+            raise GameFullError("Game must not be running to add a player.")
 
         if len(self.players) >= self.config.global_players:
             raise GameFullError(
