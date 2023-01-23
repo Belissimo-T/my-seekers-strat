@@ -187,10 +187,7 @@ class Vector:
         if isinstance(factor, Vector):
             return Vector(self.x * factor.x, self.y * factor.y)
 
-        if isinstance(factor, float):
-            return Vector(self.x * factor, self.y * factor)
-
-        raise TypeError
+        return Vector(self.x * factor, self.y * factor)
 
     def __rmul__(self, other: Vector | float):
         return self * other
@@ -743,7 +740,7 @@ class World:
         pos.x -= math.floor(pos.x / self.width) * self.width
         pos.y -= math.floor(pos.y / self.height) * self.height
 
-    def normalized_position(self,pos: Vector):
+    def normalized_position(self, pos: Vector):
         tmp = pos
         self.normalize_position(tmp)
         return tmp
