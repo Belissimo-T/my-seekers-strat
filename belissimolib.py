@@ -46,6 +46,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     def get_position_of_t_any_f(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
         return (a * (c ** t - t * math.log(c) - 1) - f * v_0 * (c ** t - 1)) / (-f * math.log(c))
+        # return (a * (c ** (t + 1) - c * (t + 1) + t) + (c - 1) * v_0 * (c ** (t + 1) - 1)) / (c - 1) ** 2
 
     @staticmethod
     def get_max_velocity_any_f(a: float, f: float = .02) -> float:
@@ -62,11 +63,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         return v_0 * (c ** t - 1) / math.log(c)
 
     @classmethod
-    def get_terminal_position_any_f(cls, a: float = 0, v_0: float = 0, f: float = .02) -> float:
-        if a != 0:
-            # haven't found a closed form with a yet, so we have to rely on t=big_value...
-            return cls.get_position_of_t_any_f(1_000_000_000, a, v_0, f)
-
+    def get_terminal_position_any_f(cls, v_0: float = 0, f: float = .02) -> float:
         return -v_0 / math.log(1 - f)
 
     def __init__(self, friction: float = .02):
@@ -121,10 +118,13 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         wolframalpha:
             p(t) = integral_0^t (v_0 c^t + a (c^t - 1)/(c - 1)) dt 
                  = (a (c^t - t log(c) - 1) + (c - 1) v_0 (c^t - 1))/((c - 1) log(c))
+                 
+            p(t) = sum_(n=0)^t (v_0 c^n + a×(c^n - 1)/(c - 1))
+                 = (a (c^(t + 1) - c (t + 1) + t) + (c - 1) v_0 (c^(t + 1) - 1))/(c - 1)^2
 
         == Terminal Position ==
-        we can actually get a much simpler formula for p(t) when a = 0:
-            p(t) = v_0*(c**t - 1)/log(c)
+        let a = 0
+        p(t) = v_0*(c**t - 1)/log(c)
         
         plugging that into wolframalpha gives us the following limit:
             lim(t->inf) v_0*(c**t - 1)/log(c) = -v_0/log(c)
@@ -295,16 +295,16 @@ def future_velocity2(time: float, physical: Physical, acceleration: Vector = Vec
     return future_velocity(time, acceleration, physical.velocity, physical.config.physical_friction)
 
 
-def terminal_position(acceleration: Vector = Vector(), velocity: Vector = Vector(), position: Vector = Vector(),
+def terminal_position(velocity: Vector = Vector(), position: Vector = Vector(),
                       friction: float = .02) -> Vector:
     return Vector(
-        FrictionMovementModel.get_terminal_position_any_f(acceleration.x, velocity.x, friction) + position.x,
-        FrictionMovementModel.get_terminal_position_any_f(acceleration.y, velocity.y, friction) + position.y
+        FrictionMovementModel.get_terminal_position_any_f(velocity.x, friction) + position.x,
+        FrictionMovementModel.get_terminal_position_any_f(velocity.y, friction) + position.y
     )
 
 
-def terminal_position2(physical: Physical, acceleration: Vector = Vector(0, 0)) -> Vector:
-    return terminal_position(acceleration, physical.velocity, physical.position, physical.config.physical_friction)
+def terminal_position2(physical: Physical) -> Vector:
+    return terminal_position(physical.velocity, physical.position, physical.config.physical_friction)
 
 
 def max_velocity(max_acceleration: float, friction: float) -> float:
@@ -312,15 +312,21 @@ def max_velocity(max_acceleration: float, friction: float) -> float:
 
 
 def t_of_max_angle_velocity(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
-    return math.log(
-        (a_x ** 2 + a_y ** 2) / (
-                a_x ** 2 - 2 * a_x * f * v_0_x +
-                a_y ** 2 - 2 * a_y * f * v_0_y +
+    try:
+        # noinspection DuplicatedCode
+        t = math.log(
+            (a_x ** 2 + a_y ** 2) / (
+                    a_x ** 2 - 2 * a_x * f * v_0_x +
+                    a_y ** 2 - 2 * a_y * f * v_0_y +
 
-                f ** 2 * v_0_x ** 2 +
-                f ** 2 * v_0_y ** 2
-        )
-    ) / (2 * math.log(1 - f))
+                    f ** 2 * v_0_x ** 2 +
+                    f ** 2 * v_0_y ** 2
+            )
+        ) / (2 * math.log(1 - f))
+    except (ValueError, ArithmeticError):
+        t = float("nan")
+
+    return t
 
 
 def balance_a_random(a: Vector) -> Vector:
@@ -584,22 +590,26 @@ class ConstAccelerationNavigation(Navigation):
         return cls(thrust_vec, start_time, start_time + eta, target, start_pos, start_vel, friction)
 
     def max_angle_velocity(self) -> float:
-        return self.start_time + t_of_max_angle_velocity(
+        t = t_of_max_angle_velocity(
             *self.thrust_vector,
             *self.start_vel,
             f=self.friction
         )
 
+        t += self.start_time
+
+        if t in self:
+            return t
+
+        return float('nan')
+
     def debug_draw(self, current_time: float, world: World, physical: Physical, index: int, steps: int
                    ) -> Color:
         path_color = super().debug_draw(current_time, world, physical, index, steps)
 
-        try:
-            max_angle_vel_t = self.max_angle_velocity()
-        except ValueError:
-            return path_color
+        max_angle_vel_t = self.max_angle_velocity()
 
-        if max_angle_vel_t not in self or current_time > max_angle_vel_t:
+        if not (current_time <= max_angle_vel_t != float('nan')):
             return path_color
 
         pos = self.pos_at(max_angle_vel_t)
@@ -607,8 +617,10 @@ class ConstAccelerationNavigation(Navigation):
         vel = self.vel_at(max_angle_vel_t)
 
         from seekers.debug_drawing import draw_line
-        draw_line(pos, pos + vel.rotated(math.pi / 2).normalized() * 10,
+        draw_line(pos, pos + vel.rotated90().normalized() * 10,
                   width=1, color=path_color)
+
+        return path_color
 
 
 class DisabledNavigation(ConstAccelerationNavigation):
@@ -784,7 +796,6 @@ class GoalFuture(EntityFuture):
 
     def end_pos(self, default: Vector = None) -> Vector:
         return terminal_position(
-            acceleration=Vector(0, 0),
             velocity=self.vel,
             position=self.pos,
             friction=self.friction

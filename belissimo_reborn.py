@@ -1,3 +1,5 @@
+import time
+
 from belissimolib import *
 
 from seekers import Seeker
@@ -36,8 +38,11 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
         draw_line(col_pos, pos2, (255, 0, 0), 1)
         draw_text(str(int((col_time - current_time) / 10)), col_pos, (255, 255, 255))
 
+    t1 = time.perf_counter()
     strat.debug_draw(seekers, goals, world, current_time)
-    draw_text(f"{current_time} {strat.last_want_solves} {strat.last_collision_time:.3f}",
+    debug_time = time.perf_counter() - t1
+
+    draw_text(f"{current_time} {strat.last_want_solves} C: {strat.last_collision_time:.4f} D: {debug_time:.4f}",
               Vector(5, world.height / 2), color=(255, 255, 255), center=False)
 
     return seekers
