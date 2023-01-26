@@ -45,8 +45,23 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     @staticmethod
     def get_position_of_t_any_f(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
-        return (a * (c ** t - t * math.log(c) - 1) - f * v_0 * (c ** t - 1)) / (-f * math.log(c))
+        # integral: wolframalpha 0->t
+        # return (a * (c ** t - t * math.log(c) - 1) - f * v_0 * (c ** t - 1)) / (-f * math.log(c))
+
+        # sum: wolframalpha 0->t
         # return (a * (c ** (t + 1) - c * (t + 1) + t) + (c - 1) * v_0 * (c ** (t + 1) - 1)) / (c - 1) ** 2
+
+        # sum: wolframalpha 1->t
+        # correct
+        return (a * (c ** (t + 1) - c * (t + 1) + t) + (c - 1) * c * v_0 * (c ** t - 1)) / (c - 1) ** 2
+
+        # sum: sympy 0->t
+        # return a*(t + 1)/f - a*(1 - (1 - f)**(t + 1))/f**2 + v_0*(1 - (1 - f)**(t + 1))/f
+
+        # sum: sympy 1->t
+        # correct
+        # return a * t / f - a * (-f - (1 - f) ** (t + 1) + 1) / f ** 2 + v_0 * (-f - (1 - f) ** (t + 1) + 1) / f
+        # return (a*(f + (1 - f)**(t + 1) - 1) + f*(a*t - v_0*(f + (1 - f)**(t + 1) - 1)))/f**2
 
     @staticmethod
     def get_max_velocity_any_f(a: float, f: float = .02) -> float:
@@ -60,11 +75,19 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     @staticmethod
     def get_position_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
-        return v_0 * (c ** t - 1) / math.log(c)
+        # integral: wolframalpha 0->t
+        # return v_0 * (c ** t - 1) / math.log(c)
+
+        # sum: wolframalpha 1->t
+        return 0 - v_0 * (1 - f) * ((1 - f) ** t - 1) / f
 
     @classmethod
     def get_terminal_position_any_f(cls, v_0: float = 0, f: float = .02) -> float:
-        return -v_0 / math.log(1 - f)
+        # wolframalpha: sum 1->inf
+        return -((-1 + f) * v_0)/f
+
+        # wolframalpha: integral 0->t
+        # return -v_0 / math.log(1 - f)
 
     def __init__(self, friction: float = .02):
         self.friction = friction
@@ -121,6 +144,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
                  
             p(t) = sum_(n=0)^t (v_0 c^n + a×(c^n - 1)/(c - 1))
                  = (a (c^(t + 1) - c (t + 1) + t) + (c - 1) v_0 (c^(t + 1) - 1))/(c - 1)^2
+                  
 
         == Terminal Position ==
         let a = 0
@@ -576,6 +600,8 @@ class ConstAccelerationNavigation(Navigation):
                           world: World,
                           start_time: float
                           ) -> "ConstAccelerationNavigation":
+        start_time = int(start_time)
+
         # noinspection PyTypeChecker
         thrust_vec, eta = solve_for_const_acceleration_torus(
             FrictionMovementModel(friction),
@@ -587,7 +613,12 @@ class ConstAccelerationNavigation(Navigation):
             normalized=False
         )
 
-        return cls(thrust_vec, start_time, start_time + eta, target, start_pos, start_vel, friction)
+        eta = int(eta)
+        end_pos = world.normalized_position(
+            future_position(eta, thrust_vec, start_vel, start_pos, friction)
+        )
+
+        return cls(thrust_vec, start_time, start_time + eta, end_pos, start_pos, start_vel, friction)
 
     def max_angle_velocity(self) -> float:
         t = t_of_max_angle_velocity(
@@ -910,7 +941,7 @@ class SeekerFuture(PhysicalFuture):
             ]
 
         # remove segment if it is finished
-        if self.segments and self.segments[0].arrival_time < current_time:
+        if self.segments and self.segments[0].arrival_time < (current_time + 1):
             self.segments.pop(0)
 
         self.check_segments(seeker, current_time, world)
