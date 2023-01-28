@@ -12,7 +12,7 @@ strat = GameStrategy(plan_limit=3)
 
 def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_players, own_camp, camps, world,
            current_time):
-    strat.update(seekers)
+    strat.update(seekers, current_time)
 
     for agent in strat.agents:
         if len(agent.future.future_targets) < 1:
@@ -21,28 +21,35 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
     strat.update_navigation(seekers, world, current_time)
     strat.update_goals(goals, current_time)
 
-    entity_futures, collisions = strat.get_collisions(world, current_time, config=seekers[0].config)
+    # entity_futures, collisions = strat.get_collisions(world, current_time, config=seekers[0].config)
+    #
+    # for (fut1_i, fut2_i), col_time in collisions.items():
+    #     pos1 = entity_futures[fut1_i].pos_at(current_time)
+    #     pos2 = entity_futures[fut2_i].pos_at(current_time)
+    #
+    #     world.normalize_position(pos1)
+    #     world.normalize_position(pos2)
+    #
+    #     col_pos = entity_futures[fut1_i].pos_at(col_time)
+    #     world.normalize_position(col_pos)
+    #
+    #     draw_circle(col_pos, 10, (255, 0, 0), 0)
+    #     draw_line(col_pos, pos1, (255, 0, 0), 1)
+    #     draw_line(col_pos, pos2, (255, 0, 0), 1)
+    #     draw_text(str(int((col_time - current_time) / 10)), col_pos, (255, 255, 255))
 
-    for (fut1_i, fut2_i), col_time in collisions.items():
-        pos1 = entity_futures[fut1_i].pos_at(current_time)
-        pos2 = entity_futures[fut2_i].pos_at(current_time)
+    futures = {i: ChangedEntityFuture(agent.future, current_time) for i, agent in enumerate(strat.agents)}
 
-        world.normalize_position(pos1)
-        world.normalize_position(pos2)
+    cllsns = strat.collision_mgr.get_collisions(current_time, 200)
 
-        col_pos = entity_futures[fut1_i].pos_at(col_time)
-        world.normalize_position(col_pos)
-
-        draw_circle(col_pos, 10, (255, 0, 0), 0)
-        draw_line(col_pos, pos1, (255, 0, 0), 1)
-        draw_line(col_pos, pos2, (255, 0, 0), 1)
-        draw_text(str(int((col_time - current_time) / 10)), col_pos, (255, 255, 255))
+    print(cllsns)
 
     t1 = time.perf_counter()
     strat.debug_draw(seekers, goals, world, current_time)
     debug_time = time.perf_counter() - t1
 
-    draw_text(f"{current_time} {strat.last_want_solves} C: {strat.last_collision_time:.4f} D: {debug_time:.4f}",
-              Vector(5, world.height / 2), color=(255, 255, 255), center=False)
+    draw_text(
+        f"{current_time} {strat.last_want_solves} C: {strat.collision_mgr.last_isect_time:.4f} CN: {strat.collision_mgr.last_n_lines} D: {debug_time:.4f}",
+        Vector(5, world.height / 2), color=(255, 255, 255), center=False)
 
     return seekers

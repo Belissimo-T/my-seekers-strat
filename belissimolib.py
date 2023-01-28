@@ -10,6 +10,8 @@ import typing
 
 from seekers import Physical, Vector, World, Seeker, Goal, Config, Color
 
+from poly_point_isect import isect_segments_include_segments
+
 logger = logging.getLogger("belissilib")
 
 
@@ -84,10 +86,57 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     @classmethod
     def get_terminal_position_any_f(cls, v_0: float = 0, f: float = .02) -> float:
         # wolframalpha: sum 1->inf
-        return -((-1 + f) * v_0)/f
+        return -((-1 + f) * v_0) / f
 
         # wolframalpha: integral 0->t
         # return -v_0 / math.log(1 - f)
+
+    @staticmethod
+    def get_angle(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+        return math.atan2(-a_y * ((1 - f) ** t - 1) / f + v_y * (1 - f) ** t,
+                          -a_x * ((1 - f) ** t - 1) / f + v_x * (1 - f) ** t)
+
+    @staticmethod
+    def get_angle_velocity(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+        if t == 0:
+            return 0
+
+        a = (-a_x * ((1 - f) ** t - 1) / f + v_x * (1 - f) ** t)
+        b = (-a_y * ((1 - f) ** t - 1) / f + v_y * (1 - f) ** t)
+
+        return (
+                a *
+                (-a_y * (1 - f) ** t * math.log(1 - f) / f + v_y * (1 - f) ** t * math.log(1 - f)) /
+                (a ** 2 +
+                 b ** 2) +
+
+                (a_y * ((1 - f) ** t - 1) / f - v_y * (1 - f) ** t) *
+                (-a_x * (1 - f) ** t * math.log(1 - f) / f + v_x * (1 - f) ** t * math.log(1 - f)) /
+                (a ** 2 +
+                 b ** 2)
+        )
+
+    @staticmethod
+    def get_angle_acceleration(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+        if t == 0:
+            return 0
+
+        a = (a_x * ((1 - f) ** t - 1) - f * v_x * (1 - f) ** t)
+        b = (a_y * ((1 - f) ** t - 1) - f * v_y * (1 - f) ** t)
+
+        # noinspection DuplicatedCode
+        return (
+                (1 - f) ** t *
+                (2 *
+                 (1 - f) ** t *
+                 ((a_x - f * v_x) * a + (a_y - f * v_y) * b) *
+                 ((a_x - f * v_x) * b - (a_y - f * v_y) * a) +
+                 (-(a_x - f * v_x) * b + (a_y - f * v_y) * a) *
+                 (a ** 2 + b ** 2)) *
+                math.log(1 - f) ** 2 /
+                (a ** 2 +
+                 b ** 2) ** 2
+        )
 
     def __init__(self, friction: float = .02):
         self.friction = friction
@@ -460,6 +509,9 @@ class Navigation(abc.ABC):
             path_color = self._path_color
             start_time = self.start_time
 
+        if index > 2:
+            path_color = tuple[int, int, int](map(lambda x: min(255, x // 2), path_color))
+
         eta = self.arrival_time - start_time
         last_pos = self.pos_at(start_time)
         for t in range(1, steps + 1):
@@ -653,6 +705,22 @@ class ConstAccelerationNavigation(Navigation):
 
         return path_color
 
+    def angle_vel_at(self, time: float) -> float:
+        return FrictionMovementModel.get_angle_velocity(
+            *self.thrust_vector,
+            *self.start_vel,
+            t=time - self.start_time,
+            f=self.friction
+        )
+
+    def angle_acc_at(self, time: float) -> float:
+        return FrictionMovementModel.get_angle_acceleration(
+            *self.thrust_vector,
+            *self.start_vel,
+            t=time - self.start_time,
+            f=self.friction
+        )
+
 
 class DisabledNavigation(ConstAccelerationNavigation):
     _path_color = (50, 50, 255)
@@ -721,6 +789,14 @@ class EntityFuture(abc.ABC):
     def end_vel(self, default: Vector) -> Vector:
         ...
 
+    @abc.abstractmethod
+    def angle_vel_at(self, next_t: float) -> float:
+        ...
+
+    # noinspection PyMethodMayBeStatic
+    def angle_acc_at(self, next_t: float) -> float:
+        return 0
+
     def debug_draw(self, current_time: float, world: World, physical: Physical, steps: int):
         ...
 
@@ -728,15 +804,15 @@ class EntityFuture(abc.ABC):
 class PhysicalFuture(EntityFuture):
     radius: float
 
-    def __init__(self, segments: list[Navigation] = None):
-        self.segments: list[Navigation] = [] if segments is None else segments
+    def __init__(self, segments: list[ConstAccelerationNavigation] = None):
+        self.segments: list[ConstAccelerationNavigation] = [] if segments is None else segments
 
-    def get_segment(self, time: float) -> Navigation:
+    def get_segment(self, time: float) -> ConstAccelerationNavigation:
         for segment in self.segments:
             if time in segment:
                 return segment
 
-        raise FutureUncertainError(f"No segment found for time {time}.")
+        raise UnknownFutureError(f"No segment found for time {time}.")
 
     def planned_pos_at(self, time: float) -> Vector:
         return self.get_segment(time).planned_pos_at(time)
@@ -779,6 +855,12 @@ class PhysicalFuture(EntityFuture):
             return default
 
         return self.segments[-1].arrival_time
+
+    def angle_vel_at(self, time: float) -> float:
+        return self.get_segment(time).angle_vel_at(time)
+
+    def angle_acc_at(self, time: float) -> float:
+        return self.get_segment(time).angle_acc_at(time)
 
     def debug_draw(self, current_time, world, physical, steps):
         for i, segment in enumerate(self.segments):
@@ -841,6 +923,9 @@ class GoalFuture(EntityFuture):
     def planned_end_vel(self, default: Vector) -> Vector:
         return self.end_vel(default)
 
+    def angle_vel_at(self, next_t: float) -> float:
+        return 0
+
     def debug_draw(self, current_time: float, world: World, physical: Goal, steps: int = 15):
         from seekers.debug_drawing import draw_circle, draw_line
 
@@ -865,6 +950,7 @@ class SeekerFuture(PhysicalFuture):
         self.plan_limit = plan_limit
         self._last_disabled: int = 0
         self.radius: float = 10
+        self.id: str
 
     def planned_targets(self, start_i: int = 0) -> typing.Iterator[Target]:
         for nav in self.segments[start_i:]:
@@ -873,7 +959,8 @@ class SeekerFuture(PhysicalFuture):
 
             yield nav.target
 
-    def plan_target(self, seeker: Seeker, current_time: float, world: World, solve_manager: SolveManager):
+    def plan_target(self, seeker: Seeker, current_time: float, world: World, solve_manager: SolveManager,
+                    collision_mgr: "CollisionManager | None" = None):
         if not self.future_targets:
             return
 
@@ -895,23 +982,29 @@ class SeekerFuture(PhysicalFuture):
             )
 
             self.segments.append(nav)
+            if collision_mgr:
+                collision_mgr.apply({seeker.id: ChangedEntityFuture(self, new_since=nav.start_time)})
 
         if not self.segments:
             solve()
         else:
             solve_manager(seeker.id, solve)
 
-    def invalidate_segments(self, i: int = 0):
+    def invalidate_segments(self, i: int = 0, collision_mgr: "CollisionManager | None" = None):
+        if collision_mgr:
+            collision_mgr.apply({self.id: ChangedEntityFuture(self, new_since=self.segments[i].start_time)})
+
         self.future_targets = [*self.planned_targets(i), *self.future_targets]
         del self.segments[i:]
 
-    def check_segments(self, seeker: Seeker, current_time: float, world: World):
+    def check_segments(self, seeker: Seeker, current_time: float, world: World,
+                       collision_mgr: "CollisionManager | None" = None):
         for i, nav in enumerate(self.segments):
             err2 = nav.pos_error2(seeker if i == 0 else None, current_time, world)
             max_err = get_target_accuracy(nav.arrival_time - current_time, seeker.radius)
 
             if err2 > max_err ** 2:
-                self.invalidate_segments(i)
+                self.invalidate_segments(i, collision_mgr)
                 break
 
     def update_seeker_info(self, seeker: Seeker, current_time: float):
@@ -931,10 +1024,12 @@ class SeekerFuture(PhysicalFuture):
             vel = segment.end_vel()
             time = segment.arrival_time
 
-    def update(self, seeker: Seeker, current_time: float, world: World, solve_manager: SolveManager):
+    def update(self, seeker: Seeker, current_time: float, world: World, solve_manager: SolveManager,
+               collision_mgr: "CollisionManager | None" = None):
+        self.id = seeker.id
 
         if seeker.disabled_counter > self._last_disabled:
-            self.invalidate_segments()
+            self.invalidate_segments(collision_mgr=collision_mgr)
             self.segments: list[Navigation] = [
                 DisabledNavigation(current_time, current_time + seeker.disabled_counter,
                                    seeker.position, seeker.velocity, seeker.config.physical_friction)
@@ -944,11 +1039,11 @@ class SeekerFuture(PhysicalFuture):
         if self.segments and self.segments[0].arrival_time < (current_time + 1):
             self.segments.pop(0)
 
-        self.check_segments(seeker, current_time, world)
+        self.check_segments(seeker, current_time, world, collision_mgr)
 
         self.update_seeker_info(seeker, current_time)
         for _ in range(self.plan_limit - len(self.segments)):
-            self.plan_target(seeker, current_time, world, solve_manager)
+            self.plan_target(seeker, current_time, world, solve_manager, collision_mgr)
             self.update_seeker_info(seeker, current_time)
 
         self._last_disabled = seeker.disabled_counter
@@ -967,7 +1062,7 @@ def get_thrust(seeker: Seeker, magnet: float | None = None) -> float:
     return a
 
 
-class FutureUncertainError(Exception): ...
+class UnknownFutureError(Exception): ...
 
 
 class Agent:
@@ -975,9 +1070,10 @@ class Agent:
         self.future = SeekerFuture(plan_limit=plan_limit)
         self.acceleration_error = Vector()
 
-    def update_navigation(self, seeker: Seeker, world: World, current_time: float, solve_manager: SolveManager):
+    def update_navigation(self, seeker: Seeker, world: World, current_time: float, solve_manager: SolveManager,
+                          collision_mgr: "CollisionManager | None" = None):
         # update navigation
-        self.future.update(seeker, current_time, world, solve_manager)
+        self.future.update(seeker, current_time, world, solve_manager, collision_mgr)
 
     def update_seeker_target(self, seeker: Seeker, current_time: float):
         # set seeker target
@@ -993,6 +1089,303 @@ class Agent:
 
     def debug_draw(self, seeker: Seeker, current_time: float, world: World, steps=20):
         self.future.debug_draw(current_time, world, seeker, steps)
+
+
+@dataclasses.dataclass
+class Collision:
+    time: float
+
+    future1: str
+    future2: str
+
+    pos1: Vector
+    pos2: Vector
+
+    dist_squared: float
+
+
+TuplePoint = tuple[float, float]
+TupleLine = tuple[TuplePoint, TuplePoint]
+
+
+@dataclasses.dataclass
+class Line:
+    start_time: float
+    end_time: float
+
+    start_pos: Vector
+    end_pos: Vector
+
+    def to_tuple(self) -> TupleLine:
+        return (int(self.start_pos.x), int(self.start_pos.y)), (int(self.end_pos.x), int(self.end_pos.y))
+
+
+@dataclasses.dataclass
+class ChangedEntityFuture:
+    entity_future: EntityFuture
+
+    new_since: float = -math.inf
+
+
+class CollisionManager:
+    def __init__(self, t_per_line: float = 20):
+        self.futures: dict[str, EntityFuture] = {}
+        self.lines: dict[str, list[list[Line]]] = {}
+        self.collisions: list[Collision] = []
+        self.time = -1
+        self.start_time = -1
+
+        self.t_per_line = t_per_line
+
+        self.radius_tolerance = 1.2  # times seeker radius
+        self.angle_acc_lookahead = 2.5  # times t_per_line
+
+        self.min_timestep = 10  # time
+        self.max_timestep_factor = 2  # times t_per_line
+
+        self.last_line_time = -1
+        self.last_isect_time = -1
+        self.last_n_lines = -1
+
+        # self.collision_results: list[Collision] = []
+        # self.future_lines: dict[str, list[Line]] = {}
+
+    def apply(self, new_futures: dict[str, ChangedEntityFuture]):
+        self.futures |= {fut_id: changed_future.entity_future for fut_id, changed_future in new_futures.items()}
+        self.time = min(
+            [changed_future.new_since for changed_future in new_futures.values() if changed_future.new_since],
+            default=self.start_time
+        )
+
+        self.lines = {
+            fut_id: self.fetch_lines(fut_id, -math.inf, changed_future.new_since, calculate=False)
+            for fut_id, changed_future in new_futures.items() if changed_future.new_since
+        }
+
+        self.collisions = [
+            col for col in self.collisions
+            if (col.future1 not in new_futures) or
+               (col.future2 not in new_futures) or
+               (new_futures[col.future1].new_since < col.time > new_futures[col.future2].new_since)
+        ]
+
+    def calculate_until(self, time: float):
+        if self.time > time:
+            return
+
+        dt = time - self.time
+        logger.debug(f"Keeping up {dt=}")
+
+        # if dt < 10:
+        #     return
+
+        new_lines = self.generate_lines(self.futures, self.time, time)
+        self.lines = {f_id: lines + new_lines.get(f_id, []) for f_id, lines in self.lines.items()}
+
+        self.collisions += self.calculate_collisions(new_lines)
+
+        self.time = time
+
+    def fetch_lines(self, future: str, start_time: float, end_time: float, calculate: bool = True) -> list[list[Line]]:
+        if calculate:
+            self.calculate_until(end_time)
+
+        return [lines for lines in self.lines.get(future, []) if start_time <= lines[0].end_time <= end_time]
+
+    def fetch_collisions(self, start_time: float, end_time: float, calculate: bool = True) -> list[Collision]:
+        if calculate:
+            self.calculate_until(end_time)
+
+        return [col for col in self.collisions if start_time <= col.time <= end_time]
+
+    def update(self, current_time: float):
+        self.lines = {
+            fut_id: [lines for lines in segments if lines[0].end_time > current_time]
+            for fut_id, segments in self.lines.items()
+        }
+
+        self.collisions = [col for col in self.collisions if col.time > current_time]
+        self.start_time = current_time
+
+    def generate_lines(self, futures: dict[str, EntityFuture], start_time: float, stop_time: float
+                       ) -> dict[str, list[list[Line]]]:
+        out = {}
+
+        for fut_id, fut in futures.items():
+            t = start_time
+            i = 0
+            lines = []
+
+            try:
+                pos = fut.pos_at(t)
+                vel90 = (fut.vel_at(t).normalized() * fut.radius * self.radius_tolerance).rotated90()
+                angle_vel = fut.angle_vel_at(t)
+                angle_acc = fut.angle_acc_at(t + self.t_per_line * self.angle_acc_lookahead)
+            except UnknownFutureError:
+                continue
+
+            while t < stop_time:
+                try:
+                    _time_divider = (angle_vel / 0.009) ** 2 + (angle_acc * 7000) ** 2
+                    time_divider = min(self.t_per_line / self.min_timestep,
+                                       max(1 / self.max_timestep_factor, _time_divider))
+
+                    next_t = t + self.t_per_line / time_divider
+
+                    if next_t > stop_time:
+                        next_t = stop_time
+
+                    next_pos = fut.pos_at(next_t)
+                    next_vel90 = (fut.vel_at(next_t).normalized() * fut.radius * self.radius_tolerance).rotated90()
+                    next_angle_vel = fut.angle_vel_at(next_t)
+                except UnknownFutureError:
+                    break
+
+                try:
+                    next_angle_acc = fut.angle_acc_at(next_t + self.t_per_line * self.angle_acc_lookahead)
+                except UnknownFutureError:
+                    break
+
+                lines.append([
+                    Line(
+                        start_time=t,
+                        end_time=next_t,
+
+                        start_pos=pos + vel90,
+                        end_pos=next_pos + next_vel90,
+                    ), Line(
+                        start_time=t,
+                        end_time=next_t,
+
+                        start_pos=pos - vel90,
+                        end_pos=next_pos - next_vel90,
+                    ),
+                    # angle_acc
+                ])
+
+                t = next_t
+                pos = next_pos
+                vel90 = next_vel90
+                angle_vel = next_angle_vel
+                # noinspection PyUnboundLocalVariable
+                angle_acc = next_angle_acc
+                i += 1
+
+            out |= {fut_id: lines}
+
+        return out
+
+    def get_lines(self, futures: dict[str, ChangedEntityFuture], start_time: float, stop_time: float
+                  ) -> dict[str, list[list[Line]]]:
+        if stop_time <= start_time:
+            return {}
+
+        out = {}
+
+        for fut_id, fut in futures.items():
+            if fut.new_since is None:
+                out |= {fut_id: self.fetch_lines(fut_id, start_time, stop_time)}
+            else:
+                out |= {fut_id: self.fetch_lines(fut_id, fut.new_since, stop_time)}
+
+        return out
+
+    def calculate_collisions(self, lines: dict[str, list[list[Line]]]) -> list[Collision]:
+        line_dict: dict[TupleLine, tuple[str, Line]] = {}
+        isect_lines: list[TupleLine] = []
+
+        for owner, fut_lines in lines.items():
+            for segment in fut_lines:
+                for line in segment:
+                    line_tuple = line.to_tuple()
+
+                    line_tuple = tuple[TuplePoint, TuplePoint](sorted(line_tuple, key=lambda x: x[0] + x[1] * 0.001))
+
+                    line_dict[line_tuple] = owner, line
+                    isect_lines.append(line_tuple)
+
+        if not isect_lines:
+            return []
+
+        t1 = time_module.perf_counter()
+        intersections: list[tuple[TuplePoint, list[TupleLine, TupleLine]]] = \
+            isect_segments_include_segments(isect_lines)
+        self.last_isect_time = time_module.perf_counter() - t1
+        self.last_n_lines = len(isect_lines)
+
+        out = []
+        for point, i_lines in intersections:
+            lines_owners: list[tuple[str, Line]] = []
+            for line in i_lines:
+                key = tuple[TuplePoint, TuplePoint](sorted(line, key=lambda x: x[0] + x[1] * 0.001))
+
+                if key not in line_dict:
+                    continue
+
+                lines_owners.append(line_dict[key])
+
+            if len(lines_owners) != 2:
+                continue
+
+            (owner1, line1), (owner2, line2) = lines_owners
+
+            if owner1 == owner2:
+                continue
+
+            dx = line1.end_pos.x - line1.start_pos.x
+            dt = line1.end_time - line1.start_time
+            col_time = line1.start_time  # point[0] / dx * dt + line1.start_time
+
+            if col_time < 0:
+                continue
+
+            out.append(Collision(
+                time=col_time,
+                future1=owner1,
+                future2=owner2,
+                pos1=Vector(*point),
+                pos2=Vector(*point),
+                dist_squared=math.nan
+            ))
+
+            # draw_circle(Vector(*point), 5, (255, 0, 0), 0)
+
+        return out
+
+    def get_collisions(self, start_t: float, duration: float = 200,
+                       changed_futures: dict[str, ChangedEntityFuture] = None) -> list[Collision]:
+
+        changed_futures = {} if changed_futures is None else changed_futures
+        change_start_time = min([fut.new_since for fut in changed_futures.values() if fut.new_since is not None],
+                                default=start_t + duration)
+
+        # get existing futures
+        # replaces some
+        # get lines
+        # redraw lines of replaced futures
+        # get intersections
+        # add previous collision results to them
+
+        futures = {fut_id: ChangedEntityFuture(fut) for fut_id, fut in self.futures.items()} | changed_futures
+
+        changed_lines = self.get_lines(futures, change_start_time, start_t + duration)
+        new_collisions = self.calculate_collisions(changed_lines)
+        old_collisions = self.fetch_collisions(start_t, change_start_time)
+
+        return old_collisions + new_collisions
+
+    def debug_draw(self):
+        from seekers.debug_drawing import draw_line, draw_circle
+        for fut, segments in self.lines.items():
+            a = 1
+            for segment in segments:
+                a = 1 - a
+
+                for line in segment:
+                    draw_line(line.start_pos, line.end_pos, (a * 255, (1 - a) * 255, (1 - a) * 255), 1)
+
+        for collision in self.collisions:
+            draw_circle(collision.pos1, 5, (255, 0, 0), 0)
 
 
 T = typing.TypeVar("T")
@@ -1051,7 +1444,7 @@ def get_raw_collisions(futures: typing.Iterable[EntityFuture], current_time: flo
             try:
                 pos = future.pos_at(current_time + dt)
                 world.normalize_position(pos)
-            except FutureUncertainError:
+            except UnknownFutureError:
                 disabled_entities.add(i)
                 continue
 
@@ -1083,7 +1476,7 @@ def refine_collision(future1: EntityFuture, future2: EntityFuture, col_time: flo
         try:
             pos1 = world.normalized_position(future1.pos_at(t))
             pos2 = world.normalized_position(future2.pos_at(t))
-        except FutureUncertainError:
+        except UnknownFutureError:
             continue
 
         if (pos2 - pos1).squared_length() < ((future1.radius + future2.radius) * 1.2) ** 2:
@@ -1116,9 +1509,13 @@ class GameStrategy:
         self.last_collision_time = -1
         self.last_want_solves = -1
 
-    def update(self, my_seekers: list[Seeker]):
+        self.collision_mgr = CollisionManager()
+
+    def update(self, my_seekers: list[Seeker], current_time: float):
         while len(self.agents) < len(my_seekers):
             self.agents.append(Agent(plan_limit=self.plan_limit))
+
+        self.collision_mgr.update(current_time)
 
     def update_navigation(self, my_seekers: list[Seeker], world: World, current_time: float):
         want_solves = defaultdict(list)
@@ -1127,7 +1524,7 @@ class GameStrategy:
             want_solves[id_].append(solve)
 
         for seeker, agent in zip(my_seekers, self.agents):
-            agent.update_navigation(seeker, world, current_time, solve_mgr)
+            agent.update_navigation(seeker, world, current_time, solve_mgr, self.collision_mgr)
 
         if want_solves:
             key = random.choice(list(want_solves.keys()))
@@ -1151,6 +1548,9 @@ class GameStrategy:
 
         for future, goal in zip(self.goal_futures.values(), goals):
             future.debug_draw(current_time, world, goal)
+
+        if self.collision_mgr:
+            self.collision_mgr.debug_draw()
 
     def get_collisions(self, world: World, current_time: float, config: Config, max_time: int = 200
                        ) -> tuple[list[EntityFuture], dict[tuple[int, int], float]]:
