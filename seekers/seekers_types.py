@@ -8,9 +8,7 @@ import math
 import dataclasses
 import abc
 import random
-import traceback
 import typing
-from multiprocessing.pool import ThreadPool
 from collections import defaultdict
 
 from . import Color
@@ -47,9 +45,9 @@ class Config:
     camp_width: int
     camp_height: int
 
-    physical_max_speed: float
     physical_friction: float
 
+    seeker_thrust: float
     seeker_magnet_slowdown: float
     seeker_disabled_time: int
     seeker_radius: float
@@ -92,9 +90,9 @@ class Config:
             camp_width=cp.getint("camp", "width"),
             camp_height=cp.getint("camp", "height"),
 
-            physical_max_speed=cp.getfloat("physical", "max-speed"),
             physical_friction=cp.getfloat("physical", "friction"),
 
+            seeker_thrust=cp.getfloat("seeker", "thrust"),
             seeker_magnet_slowdown=cp.getfloat("seeker", "magnet-slowdown"),
             seeker_disabled_time=cp.getint("seeker", "disabled-time"),
             seeker_radius=cp.getfloat("seeker", "radius"),
@@ -237,29 +235,38 @@ class Vector:
 
 
 class Physical:
-    def __init__(self, id_: str, position: Vector, velocity: Vector, mass: float, radius: float, config: Config):
+    def __init__(self, id_: str, position: Vector, velocity: Vector,
+                 mass: float, radius: float, friction: float, base_thrust: float,
+                 experimental_friction: bool = False):
         self.id = id_
+
         self.position = position
         self.velocity = velocity
         self.acceleration = Vector(0, 0)
+
         self.mass = mass
         self.radius = radius
-        self.config = config
 
-    def update_acceleration(self, world: "World") -> Vector:
-        ...
+        self.friction = friction
+        self.base_thrust = base_thrust
+        self.experimental_friction = experimental_friction
+
+    def update_acceleration(self, world: "World"):
+        """Update self.acceleration. Ideally, that is a unit vector. This is supposed to be overridden by subclasses."""
+        pass
 
     def thrust(self) -> float:
-        return self.config.physical_max_speed * self.config.physical_friction
+        """Return the thrust, i.e. length of applied acceleration. This is supposed to be overridden by subclasses."""
+        return 1
 
     def move(self, world: "World"):
-        if self.config.flags_experimental_friction:
+        if self.experimental_friction:
             vel_fact = (
                 math.sqrt(
-                    self.velocity.length() ** 2 - 2 * self.config.physical_friction * self.velocity.length()
+                    self.velocity.length() ** 2 - 2 * self.friction * self.velocity.length()
                 ) / self.velocity.length()
 
-                if (self.velocity.length() ** 2 - 2 * self.config.physical_friction * self.velocity.length()) > 0
+                if (self.velocity.length() ** 2 - 2 * self.friction * self.velocity.length()) > 0
                 else 0
             )
 
@@ -267,7 +274,7 @@ class Physical:
                 self.velocity.length() ** 2 + 2 * self.thrust()
             ) - self.velocity.length()
         else:
-            vel_fact = 1 - self.config.physical_friction
+            vel_fact = 1 - self.friction
             acc_fact = self.thrust()
 
         # friction
@@ -308,32 +315,50 @@ class InternalPhysical(Physical):
 
 
 class Goal(Physical):
-    def __init__(self, id_: str, position: Vector, velocity: Vector, mass: float, radius: float, config: Config):
-        super().__init__(id_, position, velocity, mass, radius, config)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.owner: "Player | None" = None
         self.owned_for: int = 0
 
 
 class InternalGoal(InternalPhysical, Goal):
-    def __init__(self, id_: str, position: Vector, velocity: Vector, config: Config):
-        super().__init__(id_, position, velocity, config.goal_mass, config.goal_radius, config)
+    def __init__(self, scoring_time: float, *args, **kwargs):
+        Goal.__init__(self, *args, **kwargs)
+
         self.owner: "Player | None" = None
         self.owned_for: int = 0
 
-    def camp_tick(self, camp: "Camp"):
+        self.config_scoring_time = scoring_time
+
+    @classmethod
+    def from_config(cls, id_: str, position: Vector, config: Config) -> InternalGoal:
+        return cls(
+            config.goal_scoring_time,
+            id_,
+            position,
+            Vector(0, 0),
+            config.goal_mass,
+            config.goal_radius,
+            config.physical_friction,
+            config.seeker_thrust,
+            config.flags_experimental_friction
+        )
+
+    def camp_tick(self, camp: "Camp") -> bool:
+        """Update the goal and return True if it has been captured."""
         if camp.contains(self.position):
             if self.owner == camp.owner:
                 self.owned_for += 1
             else:
                 self.owned_for = 0
                 self.owner = camp.owner
-            return self.owned_for >= self.config.goal_scoring_time
+            return self.owned_for >= self.config_scoring_time
         else:
             return False
 
     def to_ai_input(self, players: dict[str, Player]) -> Goal:
-        # TODO: config object needs to be copied
-        g = Goal(self.id, self.position.copy(), self.velocity.copy(), self.mass, self.radius, self.config)
+        g = Goal(self.id, self.position.copy(), self.velocity.copy(), self.mass, self.radius,
+                 self.friction, self.base_thrust, self.experimental_friction)
         g.owner = None if self.owner is None else players[self.owner.id]
         g.owned_for = self.owned_for
         return g
@@ -368,9 +393,8 @@ class Magnet:
 
 
 class Seeker(Physical):
-    def __init__(self, id_: str, position: Vector, velocity: Vector, mass: float, radius: float, owner: "Player",
-                 config: Config):
-        super().__init__(id_, position, velocity, mass, radius, config)
+    def __init__(self, owner: Player, *args, **kwargs):
+        Physical.__init__(self, *args, **kwargs)
         self.target = self.position
         self.disabled_counter = 0
         self.magnet = Magnet()
@@ -383,14 +407,14 @@ class Seeker(Physical):
     def disabled(self):
         return self.is_disabled
 
-    def magnetic_force(self, world, pos: Vector) -> Vector:
+    def magnetic_force(self, world: World, pos: Vector) -> Vector:
         def bump(r) -> float:
             return math.exp(1 / (r ** 2 - 1)) if r < 1 else 0
 
         r = world.torus_distance(self.position, pos) / world.diameter()
         d = world.torus_direction(self.position, pos)
 
-        return Vector(0, 0) if self.is_disabled else - d * (self.magnet.strength * bump(r * 10))
+        return Vector(0, 0) if self.is_disabled else - d * (self.magnet.strength * bump(r * 10)) * self.base_thrust
 
     # methods below are left in for compatibility
     def set_magnet_repulsive(self):
@@ -407,31 +431,50 @@ class Seeker(Physical):
 
 
 class InternalSeeker(InternalPhysical, Seeker):
-    def __init__(self, id_: str, position: Vector, velocity: Vector, owner: "InternalPlayer", config: Config):
-        super().__init__(id_, position, velocity, config.seeker_mass, config.seeker_radius, owner, config)
+    def __init__(self, owner: InternalPlayer, disabled_time: float, magnet_slowdown: float, *args, **kwargs):
+        Seeker.__init__(self, owner, *args, **kwargs)
         self.target = self.position.copy()
         self.disabled_counter = 0
         self.magnet = Magnet()
-        self.owner = owner
+
+        self.disabled_time = disabled_time
+        self.magnet_slowdown = magnet_slowdown
+
+    @classmethod
+    def from_config(cls, owner: InternalPlayer, id_: str, position: Vector, config: Config):
+        return cls(
+            owner,
+            config.seeker_disabled_time,
+            config.seeker_magnet_slowdown,
+            id_,
+            position,
+            Vector(),
+            config.seeker_mass,
+            config.seeker_radius,
+            config.physical_friction,
+            config.seeker_thrust,
+            config.flags_experimental_friction
+        )
 
     def disable(self):
-        self.disabled_counter = self.config.seeker_disabled_time
+        self.disabled_counter = self.disabled_time
 
-    def update_acceleration(self, world):
+    def update_acceleration(self, world: World):
         if self.disabled_counter == 0:
-            a = world.torus_direction(self.position, self.target)
-            self.acceleration = a
+            self.acceleration = world.torus_direction(self.position, self.target)
         else:
             self.acceleration = Vector(0, 0)
 
     def thrust(self) -> float:
-        b = self.config.seeker_magnet_slowdown if self.magnet.is_on() else 1
-        return InternalPhysical.thrust(self) * b
+        magnet_slowdown_factor = self.magnet_slowdown if self.magnet.is_on() else 1
+
+        return self.base_thrust * magnet_slowdown_factor
 
     def magnet_effective(self):
+        """Return whether the magnet is on and the seeker is not disabled."""
         return self.magnet.is_on() and not self.is_disabled
 
-    def collision(self, other: "InternalSeeker", world):
+    def collision(self, other: "InternalSeeker", world: World):
         if self.magnet_effective():
             self.disable()
         if other.magnet_effective():
@@ -444,14 +487,15 @@ class InternalSeeker(InternalPhysical, Seeker):
         InternalPhysical.collision(self, other, world)
 
     def to_ai_input(self, owner: "Player") -> Seeker:
-        s = Seeker(self.id, self.position.copy(), self.velocity.copy(), self.mass, self.radius, owner, self.config)
+        s = Seeker(owner, self.id, self.position.copy(), self.velocity.copy(), self.mass, self.radius,
+                   self.friction, self.base_thrust, self.experimental_friction)
         s.disabled_counter = self.disabled_counter
         s.target = self.target.copy()
 
         return s
 
 
-AIInput = tuple[
+AiInput = tuple[
     list[Seeker], list[Seeker], list[Seeker], list[Goal], list["Player"], "Camp", list["Camp"], "World", float
 ]
 DecideCallable = typing.Callable[
@@ -490,7 +534,7 @@ class InternalPlayer(Player):
 
     @abc.abstractmethod
     def poll_ai(self, wait: bool, world: "World", goals: list[InternalGoal],
-                players: dict[str, "InternalPlayer"], time: typing.Callable[[], float], debug: bool):
+                players: dict[str, "InternalPlayer"], time_: float, debug: bool):
         ...
 
 
@@ -498,7 +542,7 @@ class InvalidAiOutputError(Exception): ...
 
 
 @dataclasses.dataclass
-class LocalPlayerAI:
+class LocalPlayerAi:
     filepath: str
     timestamp: float
     decide_function: DecideCallable
@@ -549,7 +593,7 @@ class LocalPlayerAI:
             raise InvalidAiOutputError(f"Error while loading AI {filepath!r}. Dummy AIs are not supported.") from e
 
     @classmethod
-    def from_file(cls, filepath: str) -> "LocalPlayerAI":
+    def from_file(cls, filepath: str) -> "LocalPlayerAi":
         decide_func, preferred_color = cls.load_module(filepath)
 
         return cls(filepath, os.path.getctime(filepath), decide_func, preferred_color)
@@ -557,7 +601,7 @@ class LocalPlayerAI:
     def update(self):
         new_timestamp = os.path.getctime(self.filepath)
         if new_timestamp > self.timestamp:
-            logger = logging.getLogger("AIReloader")
+            logger = logging.getLogger("AiReloader")
             logger.debug(f"Reloading AI {self.filepath!r}.")
 
             self.decide_function, self.preferred_color = self.load_module(self.filepath)
@@ -567,10 +611,7 @@ class LocalPlayerAI:
 @dataclasses.dataclass
 class LocalPlayer(InternalPlayer):
     """A player whose decide function is called directly. See README.md old method."""
-    ai: LocalPlayerAI
-
-    _thread_pool: ThreadPool = dataclasses.field(init=False, default_factory=lambda: ThreadPool(1))
-    _waiting: int = dataclasses.field(init=False, default=0)
+    ai: LocalPlayerAi
 
     @property
     def preferred_color(self) -> Color | None:
@@ -581,7 +622,7 @@ class LocalPlayer(InternalPlayer):
                      _goals: list[InternalGoal],
                      _players: dict[str, "InternalPlayer"],
                      time: float
-                     ) -> AIInput:
+                     ) -> AiInput:
         players = {p.id: p.to_ai_input() for p in _players.values()}
         me = players[self.id]
         my_camp = me.camp
@@ -594,7 +635,7 @@ class LocalPlayer(InternalPlayer):
 
         return my_seekers, other_seekers, all_seekers, goals, list(players.values()), my_camp, camps, world, time
 
-    def _call_ai(self, ai_input: AIInput, debug: bool) -> typing.Any:
+    def call_ai(self, ai_input: AiInput, debug: bool) -> typing.Any:
         def call():
             new_debug_drawings = []
 
@@ -618,7 +659,7 @@ class LocalPlayer(InternalPlayer):
         except Exception as e:
             raise InvalidAiOutputError(f"AI {self.ai.filepath!r} raised an exception") from e
 
-    def _process_ai_output(self, ai_output: typing.Any):
+    def process_ai_output(self, ai_output: typing.Any):
         if not isinstance(ai_output, list):
             raise InvalidAiOutputError(f"AI output must be a list, not {type(ai_output)!r}.")
 
@@ -649,43 +690,15 @@ class LocalPlayer(InternalPlayer):
 
             own_seeker.magnet.strength = int(ai_seeker.magnet.strength)
 
-    def _update_ai_action(self, world: "World", goals: list[InternalGoal], players: dict[str, "InternalPlayer"],
-                          time: typing.Callable[[], float], debug: bool):
-        ai_input = self.get_ai_input(world, goals, players, time())
+    def poll_ai(self, wait: bool, world: "World", goals: list[InternalGoal], players: dict[str, "InternalPlayer"],
+                time_: float, debug: bool):
+        # ignore wait flag, supporting it would be a lot of extra code
 
-        ai_output = self._call_ai(ai_input, debug)
+        ai_input = self.get_ai_input(world, goals, players, time_)
 
-        self._process_ai_output(ai_output)
+        ai_output = self.call_ai(ai_input, debug)
 
-    def poll_ai(self, wait: bool, world: "World", goals: list[InternalGoal],
-                players: dict[str, "InternalPlayer"], time_: typing.Callable[[], float], debug: bool):
-        if wait:
-            self._update_ai_action(world, goals, players, time_, debug)
-
-        else:
-            if self._waiting > 2:
-                # no more than two items in the queue
-                return
-
-            def error_callback(e):
-                p = traceback.format_exception(e)
-                logging.getLogger(self.name).error("".join(p))
-
-            def run(*args, **kwargs):
-                self._waiting -= 1
-                # We have time as a function because in the time
-                # leading up to this being called, game time may
-                # have passed.
-                # The seekers, goals and players objects stay the
-                # same (no copies), so we do not need a function.
-                self._update_ai_action(*args, **kwargs)
-
-            self._waiting += 1
-            self._thread_pool.apply_async(
-                run,
-                args=(world, goals, players, time_, debug),
-                error_callback=error_callback
-            )
+        self.process_ai_output(ai_output)
 
     @classmethod
     def from_file(cls, filepath: str) -> "LocalPlayer":
@@ -696,12 +709,8 @@ class LocalPlayer(InternalPlayer):
             name=name,
             score=0,
             seekers={},
-            ai=LocalPlayerAI.from_file(filepath)
+            ai=LocalPlayerAi.from_file(filepath)
         )
-
-    def __del__(self):
-        # to prevent exception when the program closes
-        self._thread_pool.terminate()
 
 
 class GrpcClientPlayer(InternalPlayer):
@@ -726,8 +735,8 @@ class GrpcClientPlayer(InternalPlayer):
 
         self.was_updated.clear()
 
-    def poll_ai(self, wait: bool, world: "World", goals: list[InternalGoal],
-                players: dict[str, "InternalPlayer"], time: typing.Callable[[], float], debug: bool):
+    def poll_ai(self, wait: bool, world: "World", goals: list[InternalGoal], players: dict[str, "InternalPlayer"],
+                time_: float, debug: bool):
         if wait:
             self.wait_for_update()
 
