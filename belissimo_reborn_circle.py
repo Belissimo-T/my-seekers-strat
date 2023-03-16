@@ -18,7 +18,7 @@ def circle_pos():
 
 def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_players, own_camp, camps, world,
            current_time):
-    game_strat.update(seekers)
+    game_strat.update(seekers, current_time)
 
     for seeker, agent in zip(seekers, game_strat.agents):
         if len(agent.future.future_targets) < 1:
