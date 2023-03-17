@@ -356,7 +356,7 @@ def future_position(time: float, acceleration: Vector = Vector(), velocity: Vect
 
 
 def future_position2(time: float, physical: Physical, acceleration: Vector = Vector()) -> Vector:
-    return future_position(time, acceleration, physical.velocity, physical.position, physical.config.physical_friction)
+    return future_position(time, acceleration, physical.velocity, physical.position, physical.friction)
 
 
 def future_velocity(time: float, acceleration: Vector = Vector(), velocity: Vector = Vector(),
@@ -368,7 +368,7 @@ def future_velocity(time: float, acceleration: Vector = Vector(), velocity: Vect
 
 
 def future_velocity2(time: float, physical: Physical, acceleration: Vector = Vector()) -> Vector:
-    return future_velocity(time, acceleration, physical.velocity, physical.config.physical_friction)
+    return future_velocity(time, acceleration, physical.velocity, physical.friction)
 
 
 def terminal_position(velocity: Vector = Vector(), position: Vector = Vector(),
@@ -380,7 +380,7 @@ def terminal_position(velocity: Vector = Vector(), position: Vector = Vector(),
 
 
 def terminal_position2(physical: Physical) -> Vector:
-    return terminal_position(physical.velocity, physical.position, physical.config.physical_friction)
+    return terminal_position(physical.velocity, physical.position, physical.friction)
 
 
 def max_velocity(max_acceleration: float, friction: float) -> float:
@@ -748,7 +748,7 @@ class DisabledNavigation(ConstAccelerationNavigation):
 
         if index == 0 and isinstance(physical, Seeker):
             end_pos = world.normalized_position(self.end_pos())
-            counter = int((physical.disabled_counter / physical.config.seeker_disabled_time) * 9) + 1
+            counter = int((physical.disabled_counter / physical.disabled_time) * 9) + 1
 
             draw_circle(end_pos, physical.radius, color=self._path_color, width=1)
             draw_text(str(counter), end_pos, color=(255, 255, 255))
@@ -1002,7 +1002,7 @@ class SeekerFuture(SegmentedFuture):
                 target.pos,
                 world.normalized_position(self.end_pos(default=seeker.position)),
                 self.end_vel(default=seeker.velocity),
-                seeker.config.physical_friction,
+                seeker.friction,
                 get_thrust(seeker),
                 world,
                 int(self.planned_end_time(default=current_time))
@@ -1043,7 +1043,7 @@ class SeekerFuture(SegmentedFuture):
             segment.last_seeker_info = SeekerInfo(
                 position=pos,
                 velocity=vel,
-                friction=seeker.config.physical_friction,
+                friction=seeker.friction,
                 time=time
             )
 
@@ -1059,7 +1059,7 @@ class SeekerFuture(SegmentedFuture):
             self.invalidate_segments(collision_mgr=collision_mgr)
             self.segments: list[Navigation] = [
                 DisabledNavigation(current_time, current_time + seeker.disabled_counter,
-                                   seeker.position, seeker.velocity, seeker.config.physical_friction)
+                                   seeker.position, seeker.velocity, seeker.friction)
             ]
             # TODO: Do I need this?
             if collision_mgr:
@@ -1082,13 +1082,13 @@ class SeekerFuture(SegmentedFuture):
 
 
 def get_thrust(seeker: Seeker, magnet: float | None = None) -> float:
-    a = seeker.config.physical_friction * seeker.config.physical_max_speed
+    a = seeker.base_thrust
 
     if 0 != magnet is not None:
-        a *= seeker.config.seeker_magnet_slowdown
+        a *= seeker.magnet_slowdown
     else:
         if seeker.magnet.is_on():
-            a *= seeker.config.seeker_magnet_slowdown
+            a *= seeker.magnet_slowdown
 
     return a
 

@@ -21,9 +21,9 @@ strat = GameStrategy(plan_limit=4, col_mgr=col_mgr)
 def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_players, own_camp, camps, world,
            current_time):
     col_env.world = world
-    col_env.physical_friction = seekers[0].config.physical_friction
-    col_env.seeker_radius = seekers[0].config.seeker_radius
-    col_env.seeker_base_thrust = get_thrust(seekers[0], 0)
+    col_env.physical_friction = seekers[0].friction
+    col_env.seeker_radius = seekers[0].radius
+    col_env.seeker_base_thrust = seekers[0].base_thrust
 
     strat.update(seekers, current_time)
 
