@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from .hash_color import Color
+from .colors import Color
 from .seekers_types import *
-from . import game_logic, draw, hash_color
+from . import game_logic, draw, colors
 
 import logging
 import time
@@ -38,6 +38,9 @@ class SeekersGame:
             self.grpc = None
 
         self.players = self.load_local_players(local_ai_locations)
+        if self.players and not config.global_wait_for_players:
+            self._logger.warning("Config option `global.wait-for-players=false` is not supported for local players.")
+
         self.world = World(*self.config.map_dimensions)
         self.goals = []
         self.camps = []
@@ -59,13 +62,13 @@ class SeekersGame:
         random.seed(self.seed)
 
         # initialize goals
-        self.goals = [InternalGoal(get_id("Goal"), self.world.random_position(), Vector(), self.config) for _ in
+        self.goals = [Goal.from_config(get_id("Goal"), self.world.random_position(), self.config) for _ in
                       range(self.config.global_goals)]
 
         # initialize players
         for p in self.players.values():
             p.seekers = {
-                (id_ := get_id("Seeker")): InternalSeeker(id_, self.world.random_position(), Vector(), p, self.config)
+                (id_ := get_id("Seeker")): Seeker.from_config(p, id_, self.world.random_position(), self.config)
                 for _ in range(self.config.global_seekers)
             }
             p.color = self.get_new_player_color(p)
@@ -80,9 +83,6 @@ class SeekersGame:
             self.grpc.start_game()
 
         self.mainloop()
-
-    def get_time(self):
-        return self.ticks
 
     def mainloop(self):
         """Start the game. Block until the game is over."""
@@ -106,8 +106,8 @@ class SeekersGame:
                         break
 
                 for player in self.players.values():
-                    player.poll_ai(self.config.global_wait_for_players, self.world,
-                                   self.goals, self.players, self.get_time, self.debug)
+                    player.poll_ai(self.config.global_wait_for_players, self.world, self.goals, self.players,
+                                   self.ticks, self.debug)
 
                 game_logic.tick(self.players.values(), self.camps, self.goals, self.animations, self.world)
 
@@ -156,9 +156,9 @@ class SeekersGame:
             wait_for_players()
 
     @staticmethod
-    def load_local_players(ai_locations: typing.Iterable[str]) -> dict[str, InternalPlayer]:
+    def load_local_players(ai_locations: typing.Iterable[str]) -> dict[str, Player]:
         """Return the players found in the given directories or files."""
-        out: dict[str, InternalPlayer] = {}
+        out: dict[str, Player] = {}
 
         for location in ai_locations:
             if os.path.isdir(location):
@@ -173,7 +173,7 @@ class SeekersGame:
 
         return out
 
-    def add_player(self, player: InternalPlayer):
+    def add_player(self, player: Player):
         """Add a player to the game while it is not running yet and raise a GameFullError if the game is full.
         This function is used by the gRPC server."""
 
@@ -195,15 +195,15 @@ class SeekersGame:
             p = self.renderer.students_ttest(self.players.values())
             print(f"T-Test (probability of null hypothesis): {p:.2e} ({p:.2%})")
 
-    def get_new_player_color(self, player: InternalPlayer) -> Color:
+    def get_new_player_color(self, player: Player) -> Color:
         old_colors = [p.color for p in self.players.values() if p.color is not None]
 
         preferred = (
-            hash_color.string_hash_color(player.name) if player.preferred_color is None else player.preferred_color
+            colors.string_hash_color(player.name) if player.preferred_color is None else player.preferred_color
         )
 
-        return hash_color.pick_new(old_colors, preferred, threshold=self.config.global_color_threshold)
+        return colors.pick_new(old_colors, preferred, threshold=self.config.global_color_threshold)
 
     @property
-    def seekers(self) -> collections.ChainMap[str, InternalSeeker]:
+    def seekers(self) -> collections.ChainMap[str, Seeker]:
         return collections.ChainMap(*(p.seekers for p in self.players.values()))

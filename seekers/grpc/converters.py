@@ -1,6 +1,7 @@
 """This file consist of a series of functions that convert between the gRPC types and the internal types."""
 
 try:
+    # noinspection PyPackageRequirements
     from google._upb._message import MessageMeta
 except ImportError:
     # google package is not explicitly required, it may not be installed
@@ -37,12 +38,16 @@ def convert_vector_back(vector: seekers.Vector) -> Vector:
 def convert_seeker(seeker: types.SeekerStatus, owner: seekers.Player, config: seekers.Config) -> seekers.Seeker:
     out = seekers.Seeker(
         id_=seeker.super.id,
+        owner=owner,
         position=convert_vector(seeker.super.position),
         velocity=convert_vector(seeker.super.velocity),
         mass=config.seeker_mass,
         radius=config.seeker_radius,
-        owner=owner,
-        config=config
+        friction=config.physical_friction,
+        base_thrust=config.seeker_thrust,
+        experimental_friction=config.flags_experimental_friction,
+        disabled_time=config.seeker_disabled_time,
+        magnet_slowdown=config.seeker_magnet_slowdown
     )
 
     out.magnet.strength = seeker.magnet
@@ -61,7 +66,7 @@ def convert_physical_back(physical: seekers.Physical) -> PhysicalStatus:
     )
 
 
-def convert_seeker_back(seeker: seekers.InternalSeeker) -> SeekerStatus:
+def convert_seeker_back(seeker: seekers.Seeker) -> SeekerStatus:
     return SeekerStatus(
         super=convert_physical_back(seeker),
         player_id=seeker.owner.id,
@@ -78,7 +83,10 @@ def convert_goal(goal: types.GoalStatus, camps: dict[str, seekers.Camp], config:
         velocity=convert_vector(goal.super.velocity),
         mass=config.goal_mass,
         radius=config.goal_radius,
-        config=config
+        friction=config.physical_friction,
+        base_thrust=config.seeker_thrust,
+        experimental_friction=config.flags_experimental_friction,
+        scoring_time=config.goal_scoring_time
     )
 
     out.owned_for = goal.time_owned
@@ -90,7 +98,7 @@ def convert_goal(goal: types.GoalStatus, camps: dict[str, seekers.Camp], config:
     return out
 
 
-def convert_goal_back(goal: seekers.InternalGoal) -> GoalStatus:
+def convert_goal_back(goal: seekers.Goal) -> GoalStatus:
     return GoalStatus(
         super=convert_physical_back(goal),
         camp_id=goal.owner.id if goal.owner else "",
