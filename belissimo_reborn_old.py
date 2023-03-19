@@ -1,5 +1,4 @@
 import time
-from collections import defaultdict
 
 from belissimolib import *
 from seekers import Seeker
@@ -32,7 +31,7 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
         if seeker.is_disabled:
             continue
 
-        base_thrust = seeker.config.physical_max_speed * seeker.config.physical_friction
+        base_thrust = seeker.base_thrust
 
         upd = False
         if i not in seekers_targets or world.torus_distance(seeker.position, seekers_targets[i]) < seeker.radius:
@@ -68,7 +67,7 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
             if diff_sq > ta ** 2:
                 upd = True
 
-                if diff_sq < (diff_sq **.5 + seeker.radius / 2) ** 2:
+                if diff_sq < (diff_sq ** .5 + seeker.radius / 2) ** 2:
                     if (new_eta := resolve(seekers_last_frames[i] - j, seeker, seekers_a_vectors[i], ta)) is not None:
                         seekers_last_frames[i] = j + new_eta
                         # logger.debug(f"[{i}] RESOLVE SUCCESSFUL")
@@ -102,13 +101,14 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
 
             updates_performed_this_frame += 1
             t1 = time.perf_counter()
-            a, eta = solve_for_const_acceleration_torus(
+            a, eta = Solvers.solve_const_acc(
                 friction_movement_model,
                 seeker.velocity,
                 seekers_targets[i] - seeker.position,
                 world,
                 a=base_thrust * 1
             )
+            a = a / (base_thrust * 1)
             a_vector = a * 1
 
             dt = time.perf_counter() - t1

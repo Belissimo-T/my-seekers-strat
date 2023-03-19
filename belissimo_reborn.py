@@ -57,7 +57,7 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
     debug_time = time.perf_counter() - t1
 
     draw_text(
-        f"{current_time} {strat.last_want_solves} C: {strat.last_collision_time:.4f} C:{strat.collision_mgr.info} "
+        f"{current_time} {strat.last_want_solves} C: {strat.last_collision_time:.4f} "
         f"D: {debug_time:.4f}",
         Vector(5, world.height / 2), color=(255, 255, 255), center=False)
 

@@ -5,10 +5,10 @@ import math
 import random
 import time as time_module
 from collections import defaultdict
-import scipy.optimize
+import scipy
 import typing
 
-from seekers import Physical, Vector, World, Seeker, Goal, Config, Color
+from seekers import Physical, Vector, World, Seeker, Goal, Color
 
 logger = logging.getLogger("belissimolib")
 
@@ -85,6 +85,14 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         # sum: wolframalpha 1->t
         return 0 - v_0 * (1 - f) * ((1 - f) ** t - 1) / f
 
+    @staticmethod
+    def get_position_of_t_v0(t: float, a: float = 0, f: float = .02) -> float:
+        # sum: sympy: 1->t
+        return a * (f * t + f + (1 - f) ** (t + 1) - 1) / f ** 2
+
+        # sum: wolframalpha 1->t
+        # return a * (t + (1 - f) ** (t + 1) + (f - 1) * (t + 1)) / f ** 2
+
     @classmethod
     def get_terminal_position_any_f(cls, v_0: float = 0, f: float = .02) -> float:
         # wolframalpha: sum 1->inf
@@ -94,12 +102,12 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         # return -v_0 / math.log(1 - f)
 
     @staticmethod
-    def get_angle(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+    def get_angle(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
         return math.atan2(-a_y * ((1 - f) ** t - 1) / f + v_y * (1 - f) ** t,
                           -a_x * ((1 - f) ** t - 1) / f + v_x * (1 - f) ** t)
 
     @staticmethod
-    def get_angle_velocity(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+    def get_angle_velocity(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
         if t == 0:
             return 0
 
@@ -119,7 +127,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         )
 
     @staticmethod
-    def get_angle_acceleration(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02):
+    def get_angle_acceleration(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
         if t == 0:
             return 0
 
@@ -139,6 +147,44 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
                 (a ** 2 +
                  b ** 2) ** 2
         )
+
+    @staticmethod
+    def get_t_of_max_angle_velocity(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
+        try:
+            # noinspection DuplicatedCode
+            t = math.log(
+                (a_x ** 2 + a_y ** 2) / (
+                        a_x ** 2 - 2 * a_x * f * v_0_x +
+                        a_y ** 2 - 2 * a_y * f * v_0_y +
+
+                        f ** 2 * v_0_x ** 2 +
+                        f ** 2 * v_0_y ** 2
+                )
+            ) / (2 * math.log(1 - f))
+        except (ValueError, ArithmeticError):
+            t = float("nan")
+
+        return t
+
+    @staticmethod
+    def get_t_of_p_a(p: float, a: float, f: float) -> float:
+        n = (1 - f) ** (1 / f) * (1 - f) ** (f * p / a) * math.log(1 - f) / f
+
+        m1 = scipy.special.lambertw(n, k=0)
+        return (
+                -1 - m1.real
+                / math.log(1 - f) + 1 / f + f * p / a
+        )
+
+    @staticmethod
+    def get_a_of_p_t(p: float, t: float, f: float, v_0: float) -> float:
+        return -(
+                f * (-f * v_0 * (1 - f) ** t + v_0 * (1 - f) ** t + f * v_0 + f * p - v_0)
+        ) / (f * (1 - f) ** t - (1 - f) ** t - f * t - f + 1)
+
+    @staticmethod
+    def get_a_of_p_t_v00(p: float, t: float, f: float) -> float:
+        return f ** 2 * p / (f * t - f * (1 - f) ** t + f + (1 - f) ** t - 1)
 
     def __init__(self, friction: float = .02):
         self.friction = friction
@@ -219,118 +265,199 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         return self.get_velocity_of_t_any_f(t, a, v_0, self.friction)
 
 
-def solve_for_const_acceleration(movement_model: ConstAccelerationMovementModel,
-                                 v0: tuple[float, float],
-                                 target: tuple[float, float] | Vector,
-                                 a: float,
-                                 normalized: bool = True
-                                 ) -> tuple[Vector, float]:
-    v0x, v0y = v0
+class Solvers:
 
-    def angle_to_acceleration(angle: float) -> tuple[float, float]:
-        return math.cos(angle) * a, math.sin(angle) * a
+    @staticmethod
+    def solve_const_acc_v0y0(movement_model: FrictionMovementModel,
+                             v0x: float,
+                             target: Vector,
+                             a: float
+                             ) -> tuple[Vector, float]:
+        """This is a bit unstable"""
 
-    def d(arg: tuple[float, float]):
-        #            angle  t
-        angle, t = arg
+        def d(arg: tuple[float]):
+            #            angle
+            angle, = arg
 
-        a_x, a_y = angle_to_acceleration(angle)
+            a_vec = Vector.from_polar(angle, a)
 
-        p_x = movement_model.get_position_of_t(t, a_x, v0x)
-        p_y = movement_model.get_position_of_t(t, a_y, v0y)
+            try:
+                t = Solvers.t_of_p_a(target.y, a_vec.y, movement_model.friction)
+            except ArithmeticError:
+                return float("inf")
+            p_x = movement_model.get_position_of_t(t, a_vec.x, v0x)
+            p_y = movement_model.get_position_of_t(t, a_vec.y, 0)
 
-        return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2 + ((-t * 10_000) if t < 0 else 0)
+            return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2 + ((-t * 10_000) if t < 0 else 0)
 
-    for _ in range(10):
+        for _ in range(10):
+            # noinspection PyTypeChecker
+            res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi), method="L-BFGS-B")
+            res_angle, = res.x
+            try:
+                res_t = Solvers.t_of_p_a(target.y, Vector.from_polar(res_angle, a).y, movement_model.friction)
+                # breakpoint()
+            except ArithmeticError:
+                continue
+
+            if res.fun < 10 and res_t > 0:
+                # good enough
+                break
+
+        # noinspection PyUnboundLocalVariable
+        return Vector.from_polar(res_angle, a), res_t
+
+    @staticmethod
+    def solve_const_acc_meth_st(movement_model: FrictionMovementModel,
+                                v0: Vector,
+                                target: Vector,
+                                a: float,
+                                *,
+                                vy_is_0: bool = False) -> tuple[Vector, float]:
+        def get_a_of_t(t) -> Vector:
+            if vy_is_0:
+                a_y = Solvers.a_of_p_t_v00(target.y, t, movement_model.friction)
+            else:
+                a_y = Solvers.a_of_p_t(target.y, t, movement_model.friction, v0.y)
+
+            a_x_prop = Solvers.a_of_p_t(target.x, t, movement_model.friction, v0.x)
+
+            a_x = (a ** 2 - a_y ** 2) ** 0.5
+
+            if a_x_prop < 0:
+                a_x = -a_x
+
+            return Vector(a_x, a_y).normalized() * a
+
+        def d(arg: tuple[float]):
+            #            time
+            t, = arg
+            a_vec = get_a_of_t(t)
+
+            if not (math.isfinite(a_vec.x) and math.isfinite(a_vec.y)):
+                return float("inf")
+
+            # print(a_vec)
+
+            p_x = movement_model.get_position_of_t(t, a_vec.x, v0.x)
+            p_y = movement_model.get_position_of_t(t, a_vec.y, v0.y)
+
+            return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2
+
         # noinspection PyTypeChecker
-        res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi, random.random() * 500))
+        res = scipy.optimize.minimize(d, (1,), method="powell", bounds=((0, None),))
+        res_t, = res.x
+        res_a = get_a_of_t(res_t)
 
-        if res.fun < 10 and res.x[1] > 0:
-            # good enough
-            break
+        # noinspection PyUnboundLocalVariable
+        return res_a, res_t
 
-    # noinspection PyUnboundLocalVariable
-    res_angle, res_t = res.x
-    if res_t < 0:
-        logger.warning(f"Only invalid solutions found! (t={res_t})")
+    @staticmethod
+    def solve_const_acc_meth_st_vy0(movement_model: FrictionMovementModel,
+                                    v0x: float,
+                                    target: Vector,
+                                    a: float) -> tuple[Vector, float]:
+        return Solvers.solve_const_acc_meth_st(movement_model, Vector(v0x, 0), target, a, vy_is_0=True)
 
-    res_a_x, res_a_y = angle_to_acceleration(res_angle)
+    @staticmethod
+    def solve_const_acc_meth_vy0(movement_model: "FrictionMovementModel",
+                                 v0: "Vector",
+                                 target: "Vector",
+                                 a: float,
+                                 func: typing.Callable[
+                                     ["FrictionMovementModel", float, "Vector", float], tuple["Vector", float]
+                                 ] = solve_const_acc_v0y0
+                                 ) -> tuple["Vector", float]:
+        phi = math.atan2(v0.y, v0.x)
+        v_0_rot = v0.rotated(-phi)
+        target_rot = target.rotated(-phi)
 
-    if normalized:
-        return (1 / a) * Vector(res_a_x, res_a_y), res_t
-    else:
+        # assert v_0_rot.y < 0.0001
+
+        a_vec, t = func(movement_model, v_0_rot.x, target_rot, a)
+        return a_vec.rotated(phi), t
+
+    @staticmethod
+    def solve_const_acc_meth_std(movement_model: ConstAccelerationMovementModel,
+                                 v0: Vector,
+                                 target: Vector,
+                                 a: float
+                                 ) -> tuple[Vector, float]:
+        v0x, v0y = v0
+
+        def angle_to_acceleration(angle: float) -> tuple[float, float]:
+            return math.cos(angle) * a, math.sin(angle) * a
+
+        def d(arg: tuple[float, float]):
+            #            angle  t
+            angle, t = arg
+
+            a_x, a_y = angle_to_acceleration(angle)
+
+            p_x = movement_model.get_position_of_t(t, a_x, v0x)
+            p_y = movement_model.get_position_of_t(t, a_y, v0y)
+
+            return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2 + ((-t * 10_000) if t < 0 else 0)
+
+        for _ in range(10):
+            # noinspection PyTypeChecker
+            # nelder-mead - fast but jittery
+            # l-bfgs-b - fast but jittery
+
+            res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi, random.random() * 500),
+                                          method="l-bfgs-b",
+                                          bounds=((None, None), (0, None)))
+
+            if res.fun < 10 and res.x[1] > 0:
+                # good enough
+                break
+        else:
+            # noinspection PyUnboundLocalVariable
+            logger.warning(f"No solutions found! {res.fun:.2f}")
+
+        res_angle, res_t = res.x
+        res_a_x, res_a_y = angle_to_acceleration(res_angle)
         return Vector(res_a_x, res_a_y), res_t
 
+    MethodsType = typing.Literal["std", "v0y0", "solve-t-v0y0", "solve-t"]
 
-def solve_for_const_acceleration_and_velocity(movement_model: ConstAccelerationMovementModel,
-                                              v0: tuple[float, float],
-                                              target: tuple[float, float] | Vector,
-                                              target_velocity: tuple[float, float] | Vector
-                                              ) -> tuple[Vector, float]:
-    v0x, v0y = v0
+    @staticmethod
+    def solve_const_acc(movement_model: FrictionMovementModel,
+                        v0: Vector,
+                        target: Vector,
+                        world: World | None,
+                        a: float,
+                        method: MethodsType = "std",
+                        *,
+                        only_consider_nearest_n: int = 3
+                        ) -> tuple[Vector, float]:
+        if method == "std":
+            func = Solvers.solve_const_acc_meth_std
+        elif method == "v0y0":
+            func = lambda *args: Solvers.solve_const_acc_meth_vy0(*args, func=Solvers.solve_const_acc_v0y0)
+        elif method == "solve-t-v0y0":
+            func = lambda *args: Solvers.solve_const_acc_meth_vy0(*args, func=Solvers.solve_const_acc_meth_st_vy0)
+        elif method == "solve-t":
+            func = Solvers.solve_const_acc_meth_st
+        else:
+            raise RuntimeError(f"Unknown method {method}")
 
-    def angle_to_acceleration(angle: float, a: float) -> tuple[float, float]:
-        return math.cos(angle) * a, math.sin(angle) * a
+        if world is None:
+            return func(movement_model, v0, target, a)
 
-    def d(arg: tuple[float, float, float]):
-        #            angle  t      a
-        angle, t, a = arg
+        possible_positions = [
+            Vector(i * world.width + target.x, j * world.width + target.y) for i in [-1, 0, 1] for j in [-1, 0, 1]
+        ]
+        viable_postions = sorted(possible_positions, key=lambda p: p.squared_length())[:only_consider_nearest_n]
 
-        a_x, a_y = angle_to_acceleration(angle, a)
+        record_res = None
+        for pos in viable_postions:
+            # res = solve_for_const_acceleration_and_velocity(movement_model, v0, pos, Vector(0, 1))
+            res = func(movement_model, v0, pos, a)
+            if record_res is None or record_res[1] > res[1] > 0:
+                record_res = res
 
-        p_x = movement_model.get_position_of_t(t, a_x, v0x)
-        p_y = movement_model.get_position_of_t(t, a_y, v0y)
-
-        dist = (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2
-
-        vel_dist = (
-                (movement_model.get_velocity_of_t(t, a_x, v0x) - target_velocity[0]) ** 2
-                + (movement_model.get_velocity_of_t(t, a_y, v0y) - target_velocity[1]) ** 2
-        )
-
-        return dist * vel_dist
-
-    for _ in range(10):
-        # noinspection PyTypeChecker
-        res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi, random.random() * 500, 0.1))
-
-        if res.fun < 10 and res.x[1] > 0:
-            # good enough
-            break
-
-    # noinspection PyUnboundLocalVariable
-    res_angle, res_t, res_a = res.x
-    if res_t < 0:
-        logger.warning(f"Only invalid solutions found! (t={res_t})")
-
-    res_a_x, res_a_y = angle_to_acceleration(res_angle, res_a)
-
-    return Vector(res_a_x, res_a_y), res_t
-
-
-def solve_for_const_acceleration_torus(movement_model: ConstAccelerationMovementModel,
-                                       v0: tuple[float, float],
-                                       target: Vector,
-                                       world: World,
-                                       a: float,
-                                       normalized: bool = True,
-                                       *,
-                                       only_consider_nearest_n: int = 3
-                                       ) -> tuple[Vector, float]:
-    possible_positions = [
-        Vector(i * world.width + target.x, j * world.width + target.y) for i in [-1, 0, 1] for j in [-1, 0, 1]
-    ]
-
-    viable_postions = sorted(possible_positions, key=lambda p: p.squared_length())[:only_consider_nearest_n]
-
-    record_res = None
-
-    for pos in viable_postions:
-        res = solve_for_const_acceleration(movement_model, v0, pos, a, normalized)
-        if record_res is None or record_res[1] > res[1] > 0:
-            record_res = res
-
-    return record_res
+        return record_res
 
 
 def resolve_new_eta(eta: float, seeker: Seeker, target: Vector, world: World, a: Vector, target_accuracy: float,
@@ -384,27 +511,7 @@ def terminal_position2(physical: Physical) -> Vector:
 
 
 def max_velocity(max_acceleration: float, friction: float) -> float:
-    # TODO: move to movement model
     return FrictionMovementModel.get_max_velocity_any_f(max_acceleration, friction)
-
-
-def t_of_max_angle_velocity(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
-    # TODO: move into movement model
-    try:
-        # noinspection DuplicatedCode
-        t = math.log(
-            (a_x ** 2 + a_y ** 2) / (
-                    a_x ** 2 - 2 * a_x * f * v_0_x +
-                    a_y ** 2 - 2 * a_y * f * v_0_y +
-
-                    f ** 2 * v_0_x ** 2 +
-                    f ** 2 * v_0_y ** 2
-            )
-        ) / (2 * math.log(1 - f))
-    except (ValueError, ArithmeticError):
-        t = float("nan")
-
-    return t
 
 
 def balance_a_random(a: Vector) -> Vector:
@@ -498,6 +605,10 @@ class Navigation(abc.ABC):
     @abc.abstractmethod
     def pos_error2(self, physical: Physical, current_time: float, world: World) -> float:
         ...
+
+    @property
+    def duration(self) -> float:
+        return self.arrival_time - self.start_time
 
     def __contains__(self, item: float):
         return self.start_time <= item <= self.arrival_time
@@ -654,31 +765,32 @@ class ConstAccelerationNavigation(Navigation):
                           start_vel: Vector,
                           friction: float,
                           thrust: float,
-                          world: World,
-                          start_time: float
+                          world: World | None,
+                          start_time: float,
+
+                          **kwargs
                           ) -> "ConstAccelerationNavigation":
         start_time = int(start_time)
 
         # noinspection PyTypeChecker
-        thrust_vec, eta = solve_for_const_acceleration_torus(
-            FrictionMovementModel(friction),
-            tuple(start_vel),
-            target - start_pos,
-            world,
-            thrust,
-
-            normalized=False
+        thrust_vec, eta = Solvers.solve_const_acc(
+            movement_model=FrictionMovementModel(friction),
+            v0=start_vel,
+            target=target - start_pos,
+            world=world,
+            a=thrust,
+            **kwargs
         )
 
         eta = int(eta)
-        end_pos = world.normalized_position(
-            future_position(eta, thrust_vec, start_vel, start_pos, friction)
-        )
+        end_pos = future_position(eta, thrust_vec, start_vel, start_pos, friction)
+        if world:
+            world.normalize_position(end_pos)
 
         return cls(thrust_vec, start_time, start_time + eta, end_pos, start_pos, start_vel, friction)
 
     def max_angle_velocity(self) -> float:
-        t = t_of_max_angle_velocity(
+        t = FrictionMovementModel.get_t_of_max_angle_velocity(
             *self.thrust_vector,
             *self.start_vel,
             f=self.friction
@@ -1404,7 +1516,7 @@ class CollisionManager:
         return self._get_collisions(start_t, duration)
 
     def debug_draw(self):
-        from seekers.debug_drawing import draw_line, draw_circle
+        from seekers.debug_drawing import draw_circle
 
         for fut_id, fut in self.current_futures.items():
             t = self.calculated_collisions_until
@@ -1470,6 +1582,9 @@ class GameStrategy:
             self.collision_mgr.debug_draw()
 
     def get_collisions(self, start_time: float, duration: float) -> list[Collision]:
+        if self.collision_mgr is None:
+            return []
+
         t1 = time_module.perf_counter()
 
         collisions = self.collision_mgr.get_collisions(start_time, duration)
