@@ -282,7 +282,7 @@ class Solvers:
             a_vec = Vector.from_polar(angle, a)
 
             try:
-                t = Solvers.t_of_p_a(target.y, a_vec.y, movement_model.friction)
+                t = FrictionMovementModel.get_t_of_p_a(target.y, a_vec.y, movement_model.friction)
             except ArithmeticError:
                 return float("inf")
             p_x = movement_model.get_position_of_t(t, a_vec.x, v0x)
@@ -295,7 +295,7 @@ class Solvers:
             res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi), method="L-BFGS-B")
             res_angle, = res.x
             try:
-                res_t = Solvers.t_of_p_a(target.y, Vector.from_polar(res_angle, a).y, movement_model.friction)
+                res_t = FrictionMovementModel.get_t_of_p_a(target.y, Vector.from_polar(res_angle, a).y, movement_model.friction)
                 # breakpoint()
             except ArithmeticError:
                 continue
@@ -316,11 +316,11 @@ class Solvers:
                                 vy_is_0: bool = False) -> tuple[Vector, float]:
         def get_a_of_t(t) -> Vector:
             if vy_is_0:
-                a_y = Solvers.a_of_p_t_v00(target.y, t, movement_model.friction)
+                a_y = FrictionMovementModel.get_a_of_p_t_v00(target.y, t, movement_model.friction)
             else:
-                a_y = Solvers.a_of_p_t(target.y, t, movement_model.friction, v0.y)
+                a_y = FrictionMovementModel.get_a_of_p_t(target.y, t, movement_model.friction, v0.y)
 
-            a_x_prop = Solvers.a_of_p_t(target.x, t, movement_model.friction, v0.x)
+            a_x_prop = FrictionMovementModel.get_a_of_p_t(target.x, t, movement_model.friction, v0.x)
 
             a_x = (a ** 2 - a_y ** 2) ** 0.5
 
