@@ -9,7 +9,7 @@ def main():
     pygame.display.set_caption("Trajectory Explorer")
     clock = pygame.time.Clock()
 
-    tot_methods = ["std", "v0y0", "solve-t-v0y0", "solve-t"]
+    tot_methods = ["compound", "std", "solve-angle-v0y0", "solve-t-v0y0", "solve-t"]
     method = 0
     targets: list[Target] = [Target(Vector(100, 100))]
     target_radius = 10
@@ -32,6 +32,10 @@ def main():
                     break
                 if event.key == pygame.K_RIGHT:
                     method = (method + 1) % len(tot_methods)
+                    upd = True
+                    print(f"Method: {tot_methods[method]}")
+                if event.key == pygame.K_LEFT:
+                    method = (method - 1) % len(tot_methods)
                     upd = True
                     print(f"Method: {tot_methods[method]}")
             if event.type == pygame.VIDEORESIZE:

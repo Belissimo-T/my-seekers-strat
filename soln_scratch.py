@@ -1,9 +1,14 @@
-import matplotlib
+import numpy as np
+from matplotlib import pyplot as plt
 import sympy as sp
+import belissimolib as bl
 
 t = sp.symbols("t", nonnegative=True, real=True)
 f = sp.symbols("f", positive=True, real=True)
 a, p, v_0 = sp.symbols("a p v_0", real=True)
+v_0_x, v_0_y = sp.symbols("v_x v_y", real=True)
+a_x, a_y = sp.symbols("a_x a_y", real=True)
+p_x, p_y = sp.symbols("p_x p_y", real=True)
 angle = sp.Symbol("α", real=True)
 
 c = 1 - f
@@ -36,16 +41,6 @@ print("for a = 0:", sp.mathematica_code(p_of_t3.subs(a, 0)))
 #         ) / sp.log(1 - f)
 # )
 
-# sum 0->t
-# https://www.wolframalpha.com/input?i2d=true&i=solve+Divide%5B%5C%2840%29a+%5C%2840%29Power%5Bc%2C%5C%2840%29t+%2B+1%5C%2841%29%5D+-+c+%5C%2840%29t+%2B+1%5C%2841%29+%2B+t%5C%2841%29+%2B+%5C%2840%29c+-+1%5C%2841%29+v_0+%5C%2840%29Power%5Bc%2C%5C%2840%29t+%2B+1%5C%2841%29%5D+-+1%5C%2841%29%5C%2841%29%2CPower%5B%5C%2840%29c+-+1%5C%2841%29%2C2%5D%5D+for+t
-# t_of_p2 = (
-#         (a * sp.LambertW(-(c ** (-(v_0 * c) / (a * (c - 1)) - c / (c - 1) + v_0 / (a * (c - 1)) + 1) * sp.log(c) * (
-#                 a + c * v_0 - v_0)) / (a * (c - 1))) - a * c * sp.LambertW(-(
-#                 c ** (-(v_0 * c) / (a * (c - 1)) - c / (c - 1) + v_0 / (a * (c - 1)) + 1) * sp.log(c) * (
-#                 a + c * v_0 - v_0)) / (a * (c - 1))) - a * c * sp.log(c) - c * v_0 * sp.log(c) + v_0 * sp.log(
-#             c)) / (a * (c - 1) * sp.log(c))
-# )
-
 # sum 1->t
 t_of_p2 = (
         -sp.LambertW(
@@ -53,9 +48,60 @@ t_of_p2 = (
         ) / sp.log(1 - f) + (f * p) / a + ((f - 1) * v_0) / a + 1 / f - 1
 )
 
-# t_of_p2 = (
-#     -sp.LambertW(-(sp.log(c) * c ** (1 / (1 - c) - v_0 / a) * (a + (c - 1) * v_0)) / (a * (c - 1))) / sp.log(c) - v_0 / a - c / (c - 1)
-# )
+_t_of_p22 = (
+        -sp.LambertW(
+            -(sp.log(c) * (a + (c - 1) * v_0) * c ** ((c * (-p - v_0)) / a + p / a - 1 / (c - 1))) / (a * (c - 1))
+        ) / sp.log(c) + (c * (-p - v_0) + p) / a - 1 / (c - 1) - 1
+)
+# THEORETICAL SOLN 1
+v_0_val = bl.Vector(1, -2)
+p_val = bl.Vector(10, 5)
+sol_a, t = bl.FSolvers.solve_const_acc(friction=0.02, v0=v_0_val, target=p_val, a=0.1, world=None)
+print(f"Solution is {sol_a:.2f} in {t} seconds")
+
+a_y_of_a_x = sp.sqrt(a ** 2 - a_x ** 2)
+t_of_p_x = t_of_p2.subs({v_0: v_0_x, p: p_x, a: a_x})
+t_of_p_y = t_of_p2.subs({v_0: v_0_y, p: p_y, a: a_y_of_a_x})
+
+# - PLOT
+# exprs = [
+#     t_of_p_x.subs({f: 0.02, a: 0.1, v_0_x: v_0_val.x, v_0_y: v_0_val.y, p_x: p_val.x, p_y: p_val.y}),
+#     t_of_p_y.subs({f: 0.02, a: 0.1, v_0_x: v_0_val.x, v_0_y: v_0_val.y, p_x: p_val.x, p_y: p_val.y}),
+#     a_y_of_a_x.subs({a: 0.1}),
+# ]
+# from sympy.plotting.experimental_lambdify import lambdify as experimental_lambdify
+#
+# exprs = [experimental_lambdify([a_x], sp.re(e))
+#          for e in exprs]
+#
+# # sp.plot(*exprs, (a_x, -1, 1), show=True, ylim=(0, 100), ylabel="t", adaptive=False, nb_of_points=500)
+# _a_x_plt = np.linspace(-1, 1, 1000)
+# for e in exprs:
+#     plt.plot(_a_x_plt, [e(x) for x in _a_x_plt], ylabel="t")
+# plt.show()
+
+_q = sp.Eq(t_of_p_x, t_of_p_y)
+# print(_q)
+# soln = sp.solve(_q, a_x, dict=True)
+# print(soln)
+
+# THEORETICAL SOLN 2
+t_of_p_x2 = t_of_p2.subs({v_0: v_0_x, a: sp.cos(angle) * a, p: p_x})
+t_of_p_y2 = t_of_p2.subs({v_0: v_0_y, a: sp.sin(angle) * a, p: p_y})
+
+# - PLOT
+# exprs = [
+#     t_of_p_x2.subs({f: 0.02, a: 0.1, v_0_x: v_0_val.x, v_0_y: v_0_val.y, p_x: p_val.x, p_y: p_val.y}),
+#     t_of_p_y2.subs({f: 0.02, a: 0.1, v_0_x: v_0_val.x, v_0_y: v_0_val.y, p_x: p_val.x, p_y: p_val.y}),
+# ]
+# exprs = [sp.re(e) for e in exprs]
+#
+# sp.plot(*exprs, (angle, 0, sp.pi * 2), show=True, ylim=(0, 100), ylabel="t")
+
+_q = sp.Eq(t_of_p_x2, t_of_p_y2)
+print(sp.mathematica_code(_q))
+sol = sp.solve(_q, angle, dict=True)
+print(sol)
 
 # t_of_p_angle = t_of_p2.subs(a, a * sp.cos(angle))
 #
@@ -67,12 +113,13 @@ t_of_p2 = (
 #
 # print(t_of_p_l(0.1, 10, 0, 0.02))
 
-# MAX_V
+# MAX VELOCITY
+print(bl.FrictionMovementModel.get_max_velocity_any_f(0.1, 0.02))
+max_speed1d = -a / (f - 1)
+print(max_speed1d.subs({f: 0.02, a: 0.1}))
+max_speed2d = max_speed1d.subs(a, a * sp.cos(angle))
 
-# max_speed1d = -a / (f - 1)
-# max_speed2d = max_speed1d.subs(a, a * sp.cos(angle))
-#
-# sp.plot(max_speed2d.subs({f: 0.02, a: 0.1}), (angle, 0, sp.pi))
+sp.plot(max_speed2d.subs({f: 0.02, a: 0.1}), (angle, 0, sp.pi))
 
 # MAX ANGLE VELOCITY
 
@@ -83,9 +130,6 @@ t_of_p2 = (
 # print("Change in velocity:", acc)
 #
 # start_angle = sp.Symbol("start_angle")
-#
-# v_0_x, v_0_y = sp.symbols("v_x v_y", real=True)
-# a_x, a_y = sp.symbols("a_x a_y", real=True)
 #
 # v_of_t_x = v_of_t.subs({v_0: v_0_x, a: a_x})
 # v_of_t_y = v_of_t.subs({v_0: v_0_y, a: a_y})
@@ -130,30 +174,6 @@ t_of_p2 = (
 #       anglev_max2.subs({f: 0.02, v_0_x: v_0_x_val, v_0_y: v_0_y_val, a_x: a_x_val, a_y: a_y_val})
 #       .evalf()
 #       )
-
-#
-# p_x, p_y = sp.symbols("p_x p_y", real=True)
-#
-# t_of_p_x = t_of_p2.subs({v_0: v_0_x, a: sp.cos(angle) * a, p: p_x})
-# t_of_p_y = t_of_p2.subs({v_0: v_0_y, a: sp.sin(angle) * a, p: p_y})
-
-# exprs = [
-#     t_of_p_x.subs({f: 0.02, a: 0.1, v_0_x: 0.1, v_0_y: 0, p_x: 10, p_y: 5}),
-#     t_of_p_y.subs({f: 0.02, a: 0.1, v_0_x: 0.1, v_0_y: 0, p_x: 10, p_y: 5}),
-# ]
-#
-# from sympy.plotting.pygletplot import PygletPlot as Plot
-#
-# plt = Plot(*exprs)
-# plt.show()
-
-#
-# q = sp.Eq(t_of_p_x, t_of_p_y)
-#
-# print(sp.mathematica_code(q))
-# sol = sp.solve(q, angle, dict=True)
-#
-# print(sol)
 
 # WE DONT NEED ONE VELOCITY COMPONENT
 # t_of_p2_v0 = t_of_p2.subs({v_0: 0}).simplify()

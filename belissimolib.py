@@ -65,11 +65,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
 
     @staticmethod
     def get_max_velocity_any_f(a: float, f: float = .02) -> float:
-        # | Wrong!
-        # return -a / (f - 1)
-        # TODO
-
-        return FrictionMovementModel.get_velocity_of_t_any_f(10000, a, 0, f)
+        return a / f
 
     @staticmethod
     def get_velocity_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
@@ -190,19 +186,6 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         self.friction = friction
         self.log_c = math.log(1 - friction)
 
-        # import sympy as sp
-        #
-        # v_0, a, t, f = sp.symbols("v_0 a t f")
-        #
-        # c = 1 - f
-        #
-        # v_of_t = v_0 * c ** t + a * (c ** t - 1) / (c - 1)
-        #
-        # pos_of_t = sp.integrate(v_of_t, (t, 0, t))
-        #
-        # pos_of_t_wolfram = (a * (c ** t - t * sp.log(c) - 1) + (c - 1) * v_0 * (c ** t - 1)) / ((c - 1) * sp.log(c))
-        #
-        # pos_of_t_a0 = pos_of_t_wolfram.subs(a, 0)
         """
         The goal is to find a function that calculates the position of a
         seeker at time t when a constant acceleration is applied and friction is accounted for.
@@ -216,10 +199,15 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         a = acceleration of the seeker          (along the chosen axis)
         v(t) = velocity of the seeker at time t (along the chosen axis)
 
-        each frame, the friction is applied, then the acceleration
+        Each frame
+            1. the friction is applied        v *= (1 - f)
+            2. the acceleration is applied    v += a
+        
         v(t) = (((v_0 * (1 - f) + a) * (1 - f) + a) * (1 - f) + a)...
-                        - - - - - - - - - - t times - - - - - - - - -
-
+                 -    --------------
+               with underlined parts repeating t times.
+               The example above is for t = 3
+        
         let c = 1 - f
         
         simplify via wolfram alpha
@@ -233,8 +221,10 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
 
         v(t) = v_0 * c**t + a * (c ** t - 1) / (c - 1)
 
-        by integrating we get the position of the object at time t
-
+        By summation, we get the position of the object at time t.
+        
+        # Below formulas are not yet corrected since they start summing/integrating at t=0 instead of t=1.
+        
         wolframalpha:
             p(t) = integral_0^t (v_0 c^t + a (c^t - 1)/(c - 1)) dt 
                  = (a (c^t - t log(c) - 1) + (c - 1) v_0 (c^t - 1))/((c - 1) log(c))
@@ -245,17 +235,19 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
 
         == Terminal Position ==
         let a = 0
+        with a != 0, the limit does not exist
+        
         p(t) = v_0*(c**t - 1)/log(c)
         
         plugging that into wolframalpha gives us the following limit:
             lim(t->inf) v_0*(c**t - 1)/log(c) = -v_0/log(c)
         
-        == Terminal Velocity ==
+        == Terminal/Max Velocity ==
         solving this equation:
             v(t) = v(t + 1)
-            v = v * f + a
+            v = v * (1 - f) + a
             
-            => v = -a / (f - 1) 
+            => v = a / f
         """
 
     def get_position_of_t(self, t: float, a: float = 0, v_0: float = 0) -> float:
@@ -265,14 +257,15 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         return self.get_velocity_of_t_any_f(t, a, v_0, self.friction)
 
 
-class Solvers:
+class FSolvers:
+    """Namespace for friction solvers"""
 
     @staticmethod
-    def solve_const_acc_v0y0(movement_model: FrictionMovementModel,
-                             v0x: float,
-                             target: Vector,
-                             a: float
-                             ) -> tuple[Vector, float]:
+    def solve_const_acc_v0y0_sa(movement_model: FrictionMovementModel,
+                                v0x: float,
+                                target: Vector,
+                                a: float
+                                ) -> tuple[Vector, float]:
         """This is a bit unstable"""
 
         def d(arg: tuple[float]):
@@ -295,7 +288,8 @@ class Solvers:
             res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi), method="L-BFGS-B")
             res_angle, = res.x
             try:
-                res_t = FrictionMovementModel.get_t_of_p_a(target.y, Vector.from_polar(res_angle, a).y, movement_model.friction)
+                res_t = FrictionMovementModel.get_t_of_p_a(target.y, Vector.from_polar(res_angle, a).y,
+                                                           movement_model.friction)
                 # breakpoint()
             except ArithmeticError:
                 continue
@@ -313,7 +307,9 @@ class Solvers:
                                 target: Vector,
                                 a: float,
                                 *,
-                                vy_is_0: bool = False) -> tuple[Vector, float]:
+                                vy_is_0: bool = False,
+                                start_t: float = 200
+                                ) -> tuple[Vector, float]:
         def get_a_of_t(t) -> Vector:
             if vy_is_0:
                 a_y = FrictionMovementModel.get_a_of_p_t_v00(target.y, t, movement_model.friction)
@@ -345,7 +341,7 @@ class Solvers:
             return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2
 
         # noinspection PyTypeChecker
-        res = scipy.optimize.minimize(d, (1,), method="powell", bounds=((0, None),))
+        res = scipy.optimize.minimize(d, (start_t,), method="powell", bounds=((0, None),))
         res_t, = res.x
         res_a = get_a_of_t(res_t)
 
@@ -353,29 +349,15 @@ class Solvers:
         return res_a, res_t
 
     @staticmethod
-    def solve_const_acc_meth_st_vy0(movement_model: FrictionMovementModel,
-                                    v0x: float,
-                                    target: Vector,
-                                    a: float) -> tuple[Vector, float]:
-        return Solvers.solve_const_acc_meth_st(movement_model, Vector(v0x, 0), target, a, vy_is_0=True)
-
-    @staticmethod
-    def solve_const_acc_meth_vy0(movement_model: "FrictionMovementModel",
-                                 v0: "Vector",
-                                 target: "Vector",
-                                 a: float,
-                                 func: typing.Callable[
-                                     ["FrictionMovementModel", float, "Vector", float], tuple["Vector", float]
-                                 ] = solve_const_acc_v0y0
-                                 ) -> tuple["Vector", float]:
-        phi = math.atan2(v0.y, v0.x)
-        v_0_rot = v0.rotated(-phi)
-        target_rot = target.rotated(-phi)
-
-        # assert v_0_rot.y < 0.0001
-
-        a_vec, t = func(movement_model, v_0_rot.x, target_rot, a)
-        return a_vec.rotated(phi), t
+    def solve_const_acc_v0y0_st(movement_model: FrictionMovementModel,
+                                v0x: float,
+                                target: Vector,
+                                a: float,
+                                *,
+                                start_t: float = 200
+                                ) -> tuple[Vector, float]:
+        return FSolvers.solve_const_acc_meth_st(movement_model, Vector(v0x, 0), target, a, vy_is_0=True,
+                                                start_t=start_t)
 
     @staticmethod
     def solve_const_acc_meth_std(movement_model: ConstAccelerationMovementModel,
@@ -399,12 +381,12 @@ class Solvers:
 
             return (p_x - target[0]) ** 2 + (p_y - target[1]) ** 2 + ((-t * 10_000) if t < 0 else 0)
 
-        for _ in range(10):
+        for iteration in range(15):
             # noinspection PyTypeChecker
             # nelder-mead - fast but jittery
             # l-bfgs-b - fast but jittery
 
-            res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi, random.random() * 500),
+            res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi, random.random() * 250),
                                           method="l-bfgs-b",
                                           bounds=((None, None), (0, None)))
 
@@ -419,28 +401,104 @@ class Solvers:
         res_a_x, res_a_y = angle_to_acceleration(res_angle)
         return Vector(res_a_x, res_a_y), res_t
 
-    MethodsType = typing.Literal["std", "v0y0", "solve-t-v0y0", "solve-t"]
+    @staticmethod
+    def solve_const_acc_meth_v0y0(movement_model: "FrictionMovementModel",
+                                  v0: "Vector",
+                                  target: "Vector",
+                                  a: float,
+                                  func: typing.Callable[
+                                      ["FrictionMovementModel", float, "Vector", float], tuple["Vector", float]
+                                  ] = solve_const_acc_v0y0_sa
+                                  ) -> tuple["Vector", float]:
+        phi = math.atan2(v0.y, v0.x)
+        v_0_rot = v0.rotated(-phi)
+        target_rot = target.rotated(-phi)
+
+        # assert v_0_rot.y < 0.0001
+
+        a_vec, t = func(movement_model, v_0_rot.x, target_rot, a)
+        return a_vec.rotated(phi), t
 
     @staticmethod
-    def solve_const_acc(movement_model: FrictionMovementModel,
+    def solve_const_acc_meth_v0y0_st(movement_model: FrictionMovementModel,
+                                     v0: Vector,
+                                     target: Vector,
+                                     a: float,
+                                     *,
+                                     start_t: float = 200
+                                     ) -> tuple[Vector, float]:
+        return FSolvers.solve_const_acc_meth_v0y0(
+            movement_model, v0, target, a,
+            func=lambda *args: FSolvers.solve_const_acc_v0y0_st(*args, start_t=start_t)
+        )
+
+    @staticmethod
+    def solve_const_acc_meth_v0y0_sa(movement_model: FrictionMovementModel,
+                                     v0: Vector,
+                                     target: Vector,
+                                     a: float) -> tuple[Vector, float]:
+        return FSolvers.solve_const_acc_meth_v0y0(movement_model, v0, target, a, func=FSolvers.solve_const_acc_v0y0_sa)
+
+    @staticmethod
+    def solve_const_acc_meth_compound(movement_model: FrictionMovementModel,
+                                      v0: Vector,
+                                      target: Vector,
+                                      a: float) -> tuple[Vector, float]:
+        solve_order = [
+            lambda *args: FSolvers.solve_const_acc_meth_v0y0_st(*args, start_t=5),
+            lambda *args: FSolvers.solve_const_acc_meth_v0y0_st(*args, start_t=200),
+            FSolvers.solve_const_acc_meth_std,
+            FSolvers.solve_const_acc_meth_v0y0_sa,
+            FSolvers.solve_const_acc_meth_st,
+        ]
+
+        min_dist_sq = float("inf")
+        min_dist_a_vec: Vector | None = None
+        min_dist_t: float | None = None
+        for solve_func in solve_order:
+            a_vec, t = solve_func(movement_model, v0, target, a)
+
+            if t < 0:
+                continue
+
+            dist_sq = (
+                    (movement_model.get_position_of_t(t, a_vec.x, v0.x) - target.x) ** 2
+                    + (movement_model.get_position_of_t(t, a_vec.y, v0.y) - target.y) ** 2
+            )
+
+            if dist_sq < (2 ** 2):
+                return a_vec, t
+
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                min_dist_a_vec = a_vec
+                min_dist_t = t
+
+            logger.warning(f"Method did not succeed, dist_sq: {dist_sq:.2f} (t: {t:.2f})")
+
+        return min_dist_a_vec, min_dist_t
+
+    MethodsType = typing.Literal["std", "solve-angle-v0y0", "solve-t-v0y0", "solve-t", "compound"]
+
+    @staticmethod
+    def solve_const_acc(target: Vector,
                         v0: Vector,
-                        target: Vector,
-                        world: World | None,
+                        friction: float,
                         a: float,
-                        method: MethodsType = "std",
+                        world: World | None,
+                        method: MethodsType = "compound",
                         *,
                         only_consider_nearest_n: int = 3
                         ) -> tuple[Vector, float]:
-        if method == "std":
-            func = Solvers.solve_const_acc_meth_std
-        elif method == "v0y0":
-            func = lambda *args: Solvers.solve_const_acc_meth_vy0(*args, func=Solvers.solve_const_acc_v0y0)
-        elif method == "solve-t-v0y0":
-            func = lambda *args: Solvers.solve_const_acc_meth_vy0(*args, func=Solvers.solve_const_acc_meth_st_vy0)
-        elif method == "solve-t":
-            func = Solvers.solve_const_acc_meth_st
-        else:
-            raise RuntimeError(f"Unknown method {method}")
+        func = {
+            "std": FSolvers.solve_const_acc_meth_std,
+            "solve-angle-v0y0": FSolvers.solve_const_acc_meth_v0y0_sa,
+            "solve-t-v0y0": FSolvers.solve_const_acc_meth_v0y0_st,
+            "solve-t": FSolvers.solve_const_acc_meth_st,
+            "compound": FSolvers.solve_const_acc_meth_compound,
+        }[method]
+
+        movement_model = FrictionMovementModel(friction)
 
         if world is None:
             return func(movement_model, v0, target, a)
@@ -773,12 +831,12 @@ class ConstAccelerationNavigation(Navigation):
         start_time = int(start_time)
 
         # noinspection PyTypeChecker
-        thrust_vec, eta = Solvers.solve_const_acc(
-            movement_model=FrictionMovementModel(friction),
-            v0=start_vel,
+        thrust_vec, eta = FSolvers.solve_const_acc(
             target=target - start_pos,
-            world=world,
+            v0=start_vel,
+            friction=friction,
             a=thrust,
+            world=world,
             **kwargs
         )
 
@@ -1390,10 +1448,6 @@ class Collision:
     @property
     def pos(self):
         return (self.pos1 + self.pos2) / 2
-
-    @property
-    def dist_squared(self):
-        return (self.pos2 - self.pos1).squared_length()
 
 
 @dataclasses.dataclass

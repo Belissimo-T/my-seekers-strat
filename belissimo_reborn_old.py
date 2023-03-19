@@ -101,12 +101,12 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
 
             updates_performed_this_frame += 1
             t1 = time.perf_counter()
-            a, eta = Solvers.solve_const_acc(
-                friction_movement_model,
-                seeker.velocity,
-                seekers_targets[i] - seeker.position,
-                world,
-                a=base_thrust * 1
+            a, eta = FSolvers.solve_const_acc(
+                friction=friction_movement_model.friction,
+                v0=seeker.velocity,
+                target=seekers_targets[i] - seeker.position,
+                a=base_thrust * 1,
+                world=world
             )
             a = a / (base_thrust * 1)
             a_vector = a * 1
