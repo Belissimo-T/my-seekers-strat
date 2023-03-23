@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import abc
 import dataclasses
 import logging
@@ -5,7 +7,7 @@ import math
 import random
 import time as time_module
 from collections import defaultdict
-import scipy
+import scipy.optimize
 import typing
 
 from seekers import Physical, Vector, World, Seeker, Goal, Color
@@ -38,12 +40,12 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     """A movement model that incorporates friction and was derived mathematically."""
 
     @staticmethod
-    def get_velocity_of_t_any_f(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
+    def get_v_of_t(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
         return v_0 * c ** t + a * (c ** t - 1) / -f
 
     @staticmethod
-    def get_position_of_t_any_f(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
+    def get_p_of_t(t: float, a: float = 0, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
         # integral: wolframalpha 0->t
         # return (a * (c ** t - t * math.log(c) - 1) - f * v_0 * (c ** t - 1)) / (-f * math.log(c))
@@ -64,17 +66,17 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         # return (a*(f + (1 - f)**(t + 1) - 1) + f*(a*t - v_0*(f + (1 - f)**(t + 1) - 1)))/f**2
 
     @staticmethod
-    def get_max_velocity_any_f(a: float, f: float = .02) -> float:
+    def get_max_v(a: float, f: float = .02) -> float:
         return a / f
 
     @staticmethod
-    def get_velocity_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
+    def get_v_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
         c = 1 - f
         return v_0 * c ** t
 
     @staticmethod
-    def get_position_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
-        c = 1 - f
+    def get_p_of_t_a0(t: float, v_0: float = 0, f: float = .02) -> float:
+        # c = 1 - f
         # integral: wolframalpha 0->t
         # return v_0 * (c ** t - 1) / math.log(c)
 
@@ -82,15 +84,15 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         return 0 - v_0 * (1 - f) * ((1 - f) ** t - 1) / f
 
     @staticmethod
-    def get_position_of_t_v0(t: float, a: float = 0, f: float = .02) -> float:
+    def get_p_of_t_v0(t: float, a: float = 0, f: float = .02) -> float:
         # sum: sympy: 1->t
         return a * (f * t + f + (1 - f) ** (t + 1) - 1) / f ** 2
 
         # sum: wolframalpha 1->t
         # return a * (t + (1 - f) ** (t + 1) + (f - 1) * (t + 1)) / f ** 2
 
-    @classmethod
-    def get_terminal_position_any_f(cls, v_0: float = 0, f: float = .02) -> float:
+    @staticmethod
+    def get_terminal_p(v_0: float = 0, f: float = .02) -> float:
         # wolframalpha: sum 1->inf
         return -((-1 + f) * v_0) / f
 
@@ -103,7 +105,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
                           -a_x * ((1 - f) ** t - 1) / f + v_x * (1 - f) ** t)
 
     @staticmethod
-    def get_angle_velocity(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
+    def get_angle_v(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
         if t == 0:
             return 0
 
@@ -123,7 +125,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         )
 
     @staticmethod
-    def get_angle_acceleration(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
+    def get_angle_acc(a_x: float, a_y: float, v_x: float, v_y: float, t: float, f: float = .02) -> float:
         if t == 0:
             return 0
 
@@ -145,7 +147,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         )
 
     @staticmethod
-    def get_t_of_max_angle_velocity(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
+    def get_t_of_max_angle_v(a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> float:
         try:
             # noinspection DuplicatedCode
             t = math.log(
@@ -163,7 +165,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         return t
 
     @staticmethod
-    def get_t_of_p_a(p: float, a: float, f: float) -> float:
+    def get_t_of_p(p: float, a: float, f: float) -> float:
         n = (1 - f) ** (1 / f) * (1 - f) ** (f * p / a) * math.log(1 - f) / f
 
         m1 = scipy.special.lambertw(n, k=0)
@@ -182,9 +184,36 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
     def get_a_of_p_t_v00(p: float, t: float, f: float) -> float:
         return f ** 2 * p / (f * t - f * (1 - f) ** t + f + (1 - f) ** t - 1)
 
+    @staticmethod
+    def get_t_of_v0(a: float, v_0: float, f: float) -> float:
+        return math.log(a / (a - f * v_0)) / math.log(1 - f)
+
+    @classmethod
+    def get_t_of_v0_2d(cls, a_x: float, a_y: float, v_0_x: float, v_0_y: float, f: float) -> tuple[float, ...]:
+        out = ()
+
+        try:
+            t1 = cls.get_t_of_v0(a_x, v_0_x, f)
+            if t1 < 0:
+                raise ValueError
+
+            out += (t1,)
+        except ValueError:
+            pass
+
+        try:
+            t2 = cls.get_t_of_v0(a_y, v_0_y, f)
+            if t2 < 0:
+                raise ValueError
+
+            out += (t2,)
+        except ValueError:
+            pass
+
+        return out
+
     def __init__(self, friction: float = .02):
         self.friction = friction
-        self.log_c = math.log(1 - friction)
 
         """
         The goal is to find a function that calculates the position of a
@@ -204,7 +233,7 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
             2. the acceleration is applied    v += a
         
         v(t) = (((v_0 * (1 - f) + a) * (1 - f) + a) * (1 - f) + a)...
-                 -    --------------
+                 -   ---------------
                with underlined parts repeating t times.
                The example above is for t = 3
         
@@ -251,10 +280,10 @@ class FrictionMovementModel(ConstAccelerationMovementModel):
         """
 
     def get_position_of_t(self, t: float, a: float = 0, v_0: float = 0) -> float:
-        return self.get_position_of_t_any_f(t, a, v_0, self.friction)
+        return self.get_p_of_t(t, a, v_0, self.friction)
 
     def get_velocity_of_t(self, t: float, a: float = 0, v_0: float = 0) -> float:
-        return self.get_velocity_of_t_any_f(t, a, v_0, self.friction)
+        return self.get_v_of_t(t, a, v_0, self.friction)
 
 
 class FSolvers:
@@ -275,7 +304,7 @@ class FSolvers:
             a_vec = Vector.from_polar(angle, a)
 
             try:
-                t = FrictionMovementModel.get_t_of_p_a(target.y, a_vec.y, movement_model.friction)
+                t = FrictionMovementModel.get_t_of_p(target.y, a_vec.y, movement_model.friction)
             except ArithmeticError:
                 return float("inf")
             p_x = movement_model.get_position_of_t(t, a_vec.x, v0x)
@@ -288,8 +317,8 @@ class FSolvers:
             res = scipy.optimize.minimize(d, (random.random() * 2 * math.pi), method="L-BFGS-B")
             res_angle, = res.x
             try:
-                res_t = FrictionMovementModel.get_t_of_p_a(target.y, Vector.from_polar(res_angle, a).y,
-                                                           movement_model.friction)
+                res_t = FrictionMovementModel.get_t_of_p(target.y, Vector.from_polar(res_angle, a).y,
+                                                         movement_model.friction)
                 # breakpoint()
             except ArithmeticError:
                 continue
@@ -474,7 +503,7 @@ class FSolvers:
                 min_dist_a_vec = a_vec
                 min_dist_t = t
 
-            logger.warning(f"Method did not succeed, dist_sq: {dist_sq:.2f} (t: {t:.2f})")
+            logger.debug(f"Method {solve_func.__name__!r} did not succeed, dist_sq: {dist_sq:.2f} (t: {t:.2f})")
 
         return min_dist_a_vec, min_dist_t
 
@@ -535,8 +564,8 @@ def resolve_new_eta(eta: float, seeker: Seeker, target: Vector, world: World, a:
 def future_position(time: float, acceleration: Vector = Vector(), velocity: Vector = Vector(),
                     position: Vector = Vector(), friction: float = .02) -> Vector:
     return Vector(
-        FrictionMovementModel.get_position_of_t_any_f(time, acceleration.x, velocity.x, friction) + position.x,
-        FrictionMovementModel.get_position_of_t_any_f(time, acceleration.y, velocity.y, friction) + position.y
+        FrictionMovementModel.get_p_of_t(time, acceleration.x, velocity.x, friction) + position.x,
+        FrictionMovementModel.get_p_of_t(time, acceleration.y, velocity.y, friction) + position.y
     )
 
 
@@ -547,8 +576,8 @@ def future_position2(time: float, physical: Physical, acceleration: Vector = Vec
 def future_velocity(time: float, acceleration: Vector = Vector(), velocity: Vector = Vector(),
                     friction: float = .02) -> Vector:
     return Vector(
-        FrictionMovementModel.get_velocity_of_t_any_f(time, acceleration.x, velocity.x, friction),
-        FrictionMovementModel.get_velocity_of_t_any_f(time, acceleration.y, velocity.y, friction)
+        FrictionMovementModel.get_v_of_t(time, acceleration.x, velocity.x, friction),
+        FrictionMovementModel.get_v_of_t(time, acceleration.y, velocity.y, friction)
     )
 
 
@@ -559,8 +588,8 @@ def future_velocity2(time: float, physical: Physical, acceleration: Vector = Vec
 def terminal_position(velocity: Vector = Vector(), position: Vector = Vector(),
                       friction: float = .02) -> Vector:
     return Vector(
-        FrictionMovementModel.get_terminal_position_any_f(velocity.x, friction) + position.x,
-        FrictionMovementModel.get_terminal_position_any_f(velocity.y, friction) + position.y
+        FrictionMovementModel.get_terminal_p(velocity.x, friction) + position.x,
+        FrictionMovementModel.get_terminal_p(velocity.y, friction) + position.y
     )
 
 
@@ -569,28 +598,30 @@ def terminal_position2(physical: Physical) -> Vector:
 
 
 def max_velocity(max_acceleration: float, friction: float) -> float:
-    return FrictionMovementModel.get_max_velocity_any_f(max_acceleration, friction)
+    return FrictionMovementModel.get_max_v(max_acceleration, friction)
 
 
-def balance_a_random(a: Vector) -> Vector:
-    return a if random.random() < a.length() else -a
+class BalanceVector:
+    @staticmethod
+    def random(a: Vector) -> Vector:
+        return a if random.random() < a.length() else -a
 
+    @staticmethod
+    def with_error(a: Vector, error: float = 0) -> tuple[Vector, float]:
+        if error < a.length():
+            return a.normalized(), error + (1 - a.length())
 
-def balance_a_with_error(a: Vector, error: float = 0) -> tuple[Vector, float]:
-    if error < a.length():
-        return a.normalized(), error + (1 - a.length())
+        return Vector(0, 0), error - a.length()
 
-    return Vector(0, 0), error - a.length()
+    @staticmethod
+    def with_error2(a: Vector, error: Vector = Vector()) -> tuple[Vector, Vector]:
+        target = -error + a
 
+        out = target.normalized()
 
-def balance_a_with_error2(a: Vector, error: Vector = Vector()) -> tuple[Vector, Vector]:
-    target = -error + a
+        error += out - a
 
-    out = target.normalized()
-
-    error += out - a
-
-    return out, error
+        return out, error
 
 
 def normalize_line(world: World, a: Vector, b: Vector) -> tuple[Vector, Vector]:
@@ -848,7 +879,7 @@ class ConstAccelerationNavigation(Navigation):
         return cls(thrust_vec, start_time, start_time + eta, end_pos, start_pos, start_vel, friction)
 
     def max_angle_velocity(self) -> float:
-        t = FrictionMovementModel.get_t_of_max_angle_velocity(
+        t = FrictionMovementModel.get_t_of_max_angle_v(
             *self.thrust_vector,
             *self.start_vel,
             f=self.friction
@@ -860,6 +891,11 @@ class ConstAccelerationNavigation(Navigation):
             return t
 
         return float('nan')
+
+    def t_of_v0(self) -> tuple[float, ...]:
+        ts = FrictionMovementModel.get_t_of_v0_2d(*self.thrust_vector, *self.start_vel, self.friction)
+
+        return tuple(t + self.start_time for t in ts if (t + self.start_time) in self)
 
     def debug_draw(self, current_time: float, world: World, physical: Physical, index: int, steps: int
                    ) -> Color:
@@ -881,7 +917,7 @@ class ConstAccelerationNavigation(Navigation):
         return path_color
 
     def angle_vel_at(self, time: float) -> float:
-        return FrictionMovementModel.get_angle_velocity(
+        return FrictionMovementModel.get_angle_v(
             *self.thrust_vector,
             *self.start_vel,
             t=time - self.start_time,
@@ -889,7 +925,7 @@ class ConstAccelerationNavigation(Navigation):
         )
 
     def angle_acc_at(self, time: float) -> float:
-        return FrictionMovementModel.get_angle_acceleration(
+        return FrictionMovementModel.get_angle_acc(
             *self.thrust_vector,
             *self.start_vel,
             t=time - self.start_time,
@@ -1503,7 +1539,26 @@ class CollisionManager:
         self.calculated_collisions_until = min(self.calculated_collisions_until, change_time)
         # logger.debug(f"Truncated to {change_time}")
 
-    def _calculate_collisions(self, end_t: float):
+    def calculate_collisions(self, col_futures: typing.Sequence[EntityFuture], start_t: float, end_t: float
+                             ) -> tuple[float, list[Collision]]:
+        real_end_time, cols = get_collisions(col_futures,
+                                             start_t,
+                                             end_t,
+                                             self.collision_env,
+                                             stop_on_uncertain=True)
+        out = []
+        for (a, b), time in cols.items():
+            out.append(
+                Collision(
+                    time=time,
+                    future1=col_futures[a],
+                    future2=col_futures[b],
+                )
+            )
+
+        return real_end_time, out
+
+    def _catch_up_collisions(self, end_t: float):
         max_calc_time = min(
             fut.planned_end_time(math.inf) for fut in self.current_futures.values()
         )
@@ -1520,44 +1575,18 @@ class CollisionManager:
 
         col_futures = list(fut for fut in self.current_futures.values() if fut.id not in invalid_futures)
 
-        # col=1457
-        if self.calculated_collisions_until == 1417:
-            ...
-
-        real_end_time, cols = get_collisions(col_futures,
-                                             self.calculated_collisions_until,
-                                             end_t,
-                                             self.collision_env,
-                                             stop_on_uncertain=True)
-
-        # if real_end_time != end_t:
-        #     breakpoint()
-        # self.collision_env.world.normalized_position(col_futures[2].pos_at(1457))
-
-        for (a, b), time in cols.items():
-            self.calculated_collisions.append(
-                Collision(
-                    time=time,
-                    future1=col_futures[a],
-                    future2=col_futures[b],
-                )
-            )
-
-        # logger.debug(
-        #     f"Catched up until {real_end_time} (target was {end_t}) "
-        #     f"(dt={real_end_time - self.calculated_collisions_until}) new collisions: {len(cols)} "
-        #     f"was invalid: {invalid_futures}"
-        # )
+        real_end_time, collisions = self.calculate_collisions(col_futures, self.calculated_collisions_until, end_t)
+        self.calculated_collisions += collisions
 
         self.calculated_collisions_until = max(self.calculated_collisions_until, real_end_time)
 
-    def _get_collisions(self, start_t: float, duration: float) -> list[Collision]:
+    def _get_collisions(self, start_t: float, end_t: float) -> list[Collision]:
         # catch up
-        self._calculate_collisions(start_t + duration)
+        self._catch_up_collisions(end_t)
 
         return [
             col for col in self.calculated_collisions
-            if start_t <= col.time <= (start_t + duration)
+            if start_t <= col.time <= end_t
         ]
 
     def get_collisions(self, start_t: float, duration: float = 200,
@@ -1567,7 +1596,22 @@ class CollisionManager:
         current ones."""
         changed_futures = {} if changed_futures is None else changed_futures
 
-        return self._get_collisions(start_t, duration)
+        min_t = min((fut.new_since for fut in changed_futures.values()), default=(start_t + duration))
+
+        cols = self._get_collisions(start_t, min_t)
+
+        col_futures = list(
+            (
+                    self.current_futures | {fut_id: future.entity_future for fut_id, future in changed_futures.items()}
+            ).values()
+        )
+        cols += self.calculate_collisions(
+            col_futures,
+            min_t,
+            start_t + duration
+        )[1]
+
+        return cols
 
     def debug_draw(self):
         from seekers.debug_drawing import draw_circle

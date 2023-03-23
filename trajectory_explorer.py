@@ -114,6 +114,23 @@ def main():
                 _prev_pos = _nav_pos
             cur_pos = nav.planned_end_pos()
 
+            # draw peak points
+            max_angle_v_t = nav.max_angle_velocity()
+            pygame.draw.aaline(
+                screen, (0, 0, 255),
+                tuple(nav.planned_pos_at(max_angle_v_t)),
+                tuple(nav.planned_pos_at(max_angle_v_t)
+                      + nav.planned_vel_at(max_angle_v_t).normalized().rotated90() * 10)
+            )
+
+            for t in nav.t_of_v0():
+                pygame.draw.aaline(
+                    screen, (255, 0, 255),
+                    tuple(nav.planned_pos_at(t)),
+                    tuple(nav.planned_pos_at(t)
+                          - nav.planned_vel_at(t).normalized().rotated90() * 10)
+                )
+
         seeker_disp_t = 20
         t = seekers_t % seeker_disp_t
         while t < segmented_nav.planned_end_time(0):

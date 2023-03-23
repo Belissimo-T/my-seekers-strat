@@ -89,8 +89,6 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
                 draw_line(last_pos, next_pos, width=1, color=(0, 100, 0))
                 # draw_circle(position=next_pos, radius=seeker.radius, width=1, color=(0, 70, 0))
                 last_pos = next_pos
-
-
         except KeyError:
             upd = True
 
@@ -119,7 +117,7 @@ def decide(seekers: list[Seeker], other_seekers, all_seekers, goals, other_playe
             if i in seekers_errors: del seekers_errors[i]
             logger.debug(f"[{i}] Reroute, eta={eta:.2f}")
         try:
-            a, seekers_errors[i] = balance_a_with_error2(seekers_a_vectors[i], seekers_errors[i])
+            a, seekers_errors[i] = BalanceVector.with_error2(seekers_a_vectors[i], seekers_errors[i])
             seeker.target = seeker.position + a * 20
         except KeyError:
             pass
